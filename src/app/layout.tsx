@@ -12,7 +12,6 @@ export default function RootLayout({
 			<body>
 				<header className="site-header">
 					<Link href="/">Gorbach / Widget lab</Link>
-					<Link href="/admin">Administration ↗</Link>
 				</header>
 				{children}
 				<footer className="site-footer">
