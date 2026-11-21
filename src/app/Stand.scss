@@ -52,20 +52,4 @@
 	.sample p {
 		padding: 0 1.5rem 1rem;
 	}
-	.chat-preview {
-		position: fixed;
-		bottom: 1rem;
-		right: 1rem;
-		max-width: min(18rem, 90vw);
-		background: $ink;
-		color: $paper;
-		padding: 1rem;
-		border-radius: 1rem;
-	}
-	.chat-preview summary:hover {
-		text-decoration: underline;
-	}
-	.chat-preview summary:focus-visible {
-		outline-color: $paper;
-	}
 }

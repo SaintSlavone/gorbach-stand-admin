@@ -1,3 +1,4 @@
+import Script from "next/script";
 import "./Stand.scss";
 import "./Adaptations.scss";
 
@@ -35,10 +36,7 @@ export default function StandPage() {
 					</details>
 				))}
 			</section>
-			<details className="chat-preview">
-				<summary>Chat preview</summary>
-				<p>This space is reserved for the Gorbach widget.</p>
-			</details>
+			<Script src="/widget/gorbach.js" data-api="/preview-api" strategy="afterInteractive" />
 		</main>
 	);
 }
