@@ -4,9 +4,9 @@ import { mkdirSync } from "node:fs";
 import path from "node:path";
 const login = process.argv[2]?.trim();
 const password = process.env.GORBACH_STAFF_PASSWORD;
-if (!login || !password || password.length < 12)
+if (!login || !password || Array.from(password).length < 4)
 	throw new Error(
-		"Supply a login argument and GORBACH_STAFF_PASSWORD of at least 12 characters.",
+		"Supply a login argument and GORBACH_STAFF_PASSWORD of at least 4 characters.",
 	);
 const dir = process.env.GORBACH_DATA_DIR || ".gorbach";
 mkdirSync(dir, { recursive: true, mode: 0o700 });
