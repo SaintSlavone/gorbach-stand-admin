@@ -1,6 +1,6 @@
 (() => {
 "use strict";
-const WIDGET_CSS = "@media(max-width: 699px){.chat-widget section#chat{position:fixed;inset:0;width:100%;height:100dvh;border-radius:0;box-sizing:border-box;padding-top:env(safe-area-inset-top)}}:host{all:initial}.chat-widget{position:fixed;right:20px;bottom:max(24px,env(safe-area-inset-bottom));z-index:2147483000;font:16px/1.5 Arial,sans-serif;color:#173f34}.chat-widget[hidden],.chat-widget [hidden]{display:none}.chat-widget button{border:0;cursor:pointer;color:#fff;background:#173f34}.chat-widget button:focus-visible{outline:3px solid #173f34;outline-offset:3px}.chat-widget .launcher{display:grid;place-items:center;width:56px;height:56px;border-radius:50%}.chat-widget .launcher[hidden]{display:none}.chat-widget section{width:min(380px,100vw - 40px);height:min(600px,100dvh - 48px);background:#faf9f5;border-radius:18px;overflow:hidden;box-shadow:0 8px 40px rgba(23,63,52,.2)}.chat-widget header{display:flex;align-items:center;justify-content:space-between;background:#173f34;color:#fff;padding:12px 18px}.chat-widget .close{font-size:28px;width:44px;height:44px;border-radius:50%}.chat-widget .close:focus-visible{outline-color:#fff}.chat-widget section:not([hidden]){display:flex;flex-direction:column}.chat-widget .reset{align-self:flex-end;margin:8px 12px}.chat-widget .conversation{flex:1;min-height:0;overflow-y:auto;padding:12px}.chat-widget .survey{border:0;padding:0;margin:0;min-width:0;overflow-wrap:anywhere}.chat-widget .survey legend,.chat-widget .survey dt{font-weight:bold}.chat-widget .survey dl,.chat-widget .survey dd{margin:0 0 8px}.chat-widget .survey button{margin:4px;padding:8px 12px;border-radius:8px}.chat-widget .survey button[aria-pressed=true]{background:#fff;color:#173f34;outline:2px solid #173f34}.chat-widget .survey button:disabled{opacity:.6}.chat-widget .conversation p{width:fit-content;overflow-wrap:anywhere;white-space:pre-wrap;margin-bottom:8px}.chat-widget .visitor{margin-left:auto;color:#fff;background:#173f34}.chat-widget form{display:flex;gap:8px;padding:12px;padding-bottom:max(12px,env(safe-area-inset-bottom))}.chat-widget input{flex:1;min-width:0;font:inherit}.chat-widget form button,.chat-widget .reset{border-radius:8px;padding:8px 12px}.chat-widget .error:not(:empty){padding:4px 12px}.chat-widget p{margin:0;background:#fff;border-radius:12px;padding:12px 16px}";
+const WIDGET_CSS = "@media(max-width: 699px){.chat-widget section#chat{position:fixed;inset:0;width:100%;height:100dvh;border-radius:0;box-sizing:border-box;padding-top:env(safe-area-inset-top)}}:host{all:initial}.chat-widget{position:fixed;right:20px;bottom:max(24px,env(safe-area-inset-bottom));z-index:2147483000;font:16px/1.5 Arial,sans-serif;color:#173f34}.chat-widget[hidden],.chat-widget [hidden]{display:none}.chat-widget button{border:0;cursor:pointer;color:#fff;background:#173f34}.chat-widget button:focus-visible{outline:3px solid #173f34;outline-offset:3px}.chat-widget .launcher{display:grid;place-items:center;width:56px;height:56px;border-radius:50%}.chat-widget .launcher[hidden]{display:none}.chat-widget section{width:min(380px,100vw - 40px);height:min(600px,100dvh - 48px);background:#faf9f5;border-radius:18px;overflow:hidden;box-shadow:0 8px 40px rgba(23,63,52,.2)}.chat-widget header{display:flex;align-items:center;justify-content:space-between;background:#173f34;color:#fff;padding:12px 18px}.chat-widget .close{font-size:28px;width:44px;height:44px;border-radius:50%}.chat-widget .close:focus-visible{outline-color:#fff}.chat-widget section:not([hidden]){display:flex;flex-direction:column}.chat-widget .reset{align-self:flex-end;margin:8px 12px}.chat-widget .conversation{flex:1;min-height:0;overflow-y:auto;padding:12px}.chat-widget .survey{border:0;padding:0;margin:0;min-width:0;overflow-wrap:anywhere}.chat-widget .survey legend,.chat-widget .survey dt{font-weight:bold}.chat-widget .survey dl,.chat-widget .survey dd{margin:0 0 8px}.chat-widget .survey button{margin:4px;padding:8px 12px;border-radius:8px}.chat-widget .survey button[aria-pressed=true]{background:#fff;color:#173f34;outline:2px solid #173f34}.chat-widget .survey button:disabled{opacity:.6}.chat-widget .conversation p{width:fit-content;overflow-wrap:anywhere;white-space:pre-wrap;margin-bottom:8px}.chat-widget .visitor{margin-left:auto;color:#fff;background:#173f34}.chat-widget .waiting{width:16px;height:16px;margin:12px 16px;border:2px solid #173f34;border-right-color:rgba(0,0,0,0);border-radius:50%;animation:gorbach-spin .7s linear infinite}.chat-widget form{display:flex;gap:8px;padding:12px;padding-bottom:max(12px,env(safe-area-inset-bottom))}.chat-widget input{flex:1;min-width:0;font:inherit}.chat-widget form button,.chat-widget .reset{border-radius:8px;padding:8px 12px}.chat-widget .error:not(:empty){padding:4px 12px}.chat-widget p{margin:0;background:#fff;border-radius:12px;padding:12px 16px}@keyframes gorbach-spin{to{transform:rotate(360deg)}}";
 const surveyLabels = {
     cs: { confirm: "Potvrdit výběr", step: "Krok", contact: "Telefon nebo e-mail", submit: "Odeslat poptávku", receipt: "Číslo poptávky", invalidContact: "Zadejte platný telefon nebo e-mail." },
     de: { confirm: "Auswahl bestätigen", step: "Schritt", contact: "Telefon oder E-Mail", submit: "Anfrage senden", receipt: "Anfragenummer", invalidContact: "Geben Sie eine gültige Telefonnummer oder E-Mail-Adresse ein." },
@@ -350,7 +350,7 @@ function mountWidget(api) {
     form.onsubmit = (event) => {
         event.preventDefault();
         const text = input.value.trim();
-        if (!text)
+        if (busy || !text)
             return;
         if (Array.from(text).length > 800) {
             error.textContent = lengthErrors[lang];
@@ -363,8 +363,29 @@ function mountWidget(api) {
                 return;
             if (attachmentField?.type === "text+file" && !uploaded.length)
                 throw new Error("invalid_attachment");
-            await answer(attachmentField?.type === "text+file" ? { text, files: uploaded.map(file => file.id) } : { text });
+            const draft = input.value;
             input.value = "";
+            const question = document.createElement("p");
+            question.className = "visitor";
+            question.textContent = text;
+            const waiting = document.createElement("div");
+            waiting.className = "waiting";
+            waiting.setAttribute("role", "status");
+            waiting.setAttribute("aria-label", "Čekám na odpověď…");
+            transcript.append(question, waiting);
+            list.scrollTop = list.scrollHeight;
+            try {
+                await answer(attachmentField?.type === "text+file" ? { text, files: uploaded.map(file => file.id) } : { text });
+            }
+            catch (cause) {
+                input.value = draft;
+                throw cause;
+            }
+            finally {
+                question.remove();
+                waiting.remove();
+                list.scrollTop = list.scrollHeight;
+            }
             input.focus();
         });
     };
