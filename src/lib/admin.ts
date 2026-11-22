@@ -18,6 +18,28 @@ export function db() {
  CREATE TABLE IF NOT EXISTS leads(id TEXT PRIMARY KEY,dialog TEXT UNIQUE NOT NULL REFERENCES dialogs(id) ON DELETE CASCADE,kind TEXT NOT NULL,product TEXT NOT NULL,status TEXT NOT NULL DEFAULT 'Nová',created TEXT NOT NULL,contact TEXT NOT NULL,summary TEXT NOT NULL,fields TEXT DEFAULT '{}',delivery TEXT DEFAULT '');
  CREATE TABLE IF NOT EXISTS files(id TEXT PRIMARY KEY,dialog TEXT NOT NULL REFERENCES dialogs(id) ON DELETE CASCADE,name TEXT NOT NULL,bytes BLOB NOT NULL);
  CREATE TABLE IF NOT EXISTS revisions(id INTEGER PRIMARY KEY,kind TEXT NOT NULL,content TEXT NOT NULL,editor TEXT NOT NULL,created TEXT DEFAULT CURRENT_TIMESTAMP);`);
+	database.exec("PRAGMA busy_timeout=5000; BEGIN IMMEDIATE");
+	try {
+		if (
+			!database
+				.prepare("PRAGMA table_info(dialogs)")
+				.all()
+				.some((c) => c.name === "utm")
+		)
+			database.exec("ALTER TABLE dialogs ADD COLUMN utm TEXT NOT NULL DEFAULT '{}'");
+		if (
+			!database
+				.prepare("PRAGMA table_info(messages)")
+				.all()
+				.some((c) => c.name === "chips")
+		)
+			database.exec("ALTER TABLE messages ADD COLUMN chips TEXT NOT NULL DEFAULT '[]'");
+		database.exec("COMMIT");
+	} catch (error) {
+		database.exec("ROLLBACK");
+		database.close();
+		throw error;
+	}
 	connection = database;
 	return database;
 }
