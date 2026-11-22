@@ -1,6 +1,7 @@
 "use client";
 import { useState } from "react";
-type Section = { id: string; title: string; text: string };
+import { knowledgeLanguage, knowledgeLanguages } from "@/lib/validate-revision";
+type Section = { id: string; title: string; text: string; lang?: unknown };
 export default function Editor({
 	initial,
 	knowledge,
@@ -28,6 +29,31 @@ export default function Editor({
 			{sections.map((s, i) => (
 				<fieldset key={s.id}>
 					<legend>{i + 1}</legend>
+					<label>
+						{label("Jazyk oddílu", "Язык раздела")}
+						<select
+							required
+							value={knowledgeLanguage(s.lang) ?? ""}
+							onChange={(e) =>
+								set(
+									sections.map((item) =>
+										item.id === s.id ? { ...item, lang: e.target.value } : item,
+									),
+								)
+							}
+						>
+							{knowledgeLanguage(s.lang) === null && (
+								<option value="" disabled>
+									{label("Vyberte jazyk", "Выберите язык")}
+								</option>
+							)}
+							{Object.entries(knowledgeLanguages).map(([code, name]) => (
+								<option key={code} value={code}>
+									{name}
+								</option>
+							))}
+						</select>
+					</label>
 					{(["title", "text"] as const).map((key) => (
 						<label key={key}>
 							{key === "title" ? label("Název", "Название") : label("Text", "Текст")}
@@ -63,7 +89,9 @@ export default function Editor({
 			))}
 			<button
 				type="button"
-				onClick={() => set([...sections, { id: crypto.randomUUID(), title: "", text: "" }])}
+				onClick={() =>
+					set([...sections, { id: crypto.randomUUID(), title: "", text: "", lang: "cs" }])
+				}
 			>
 				{label("Přidat oddíl", "Добавить раздел")}
 			</button>
