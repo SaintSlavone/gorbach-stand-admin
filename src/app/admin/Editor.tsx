@@ -1,7 +1,7 @@
 "use client";
 import { useState } from "react";
-import { knowledgeLanguage, knowledgeLanguages } from "@/lib/validate-revision";
-type Section = { id: string; title: string; text: string; lang?: unknown };
+import { savedKnowledgeLanguage, knowledgeLanguages } from "@/lib/validate-revision";
+type Section = { id: string; title: string; text: string; lang: string };
 export default function Editor({
 	initial,
 	knowledge,
@@ -12,7 +12,12 @@ export default function Editor({
 	ru: boolean;
 }) {
 	const [sections, set] = useState<Section[]>(() =>
-		knowledge ? JSON.parse(initial) : [],
+		knowledge
+			? JSON.parse(initial).map((section: Section) => ({
+					...section,
+					lang: savedKnowledgeLanguage(section.lang) ?? "",
+				}))
+			: [],
 	);
 	const label = (cs: string, r: string) => (ru ? r : cs);
 	if (!knowledge)
@@ -33,7 +38,7 @@ export default function Editor({
 						{label("Jazyk oddílu", "Язык раздела")}
 						<select
 							required
-							value={knowledgeLanguage(s.lang) ?? ""}
+							value={s.lang}
 							onChange={(e) =>
 								set(
 									sections.map((item) =>
@@ -42,7 +47,7 @@ export default function Editor({
 								)
 							}
 						>
-							{knowledgeLanguage(s.lang) === null && (
+							{!s.lang && (
 								<option value="" disabled>
 									{label("Vyberte jazyk", "Выберите язык")}
 								</option>

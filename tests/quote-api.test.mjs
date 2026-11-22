@@ -495,7 +495,12 @@ test("knowledge answers must match the dialog language and a pinned source line"
 	assert.equal(await ask("en"), fallback);
 	assert.equal(requests.length, before);
 	assert.equal(await ask("cs"), czech);
-	sections.push({ id: "installation", lang: "en", title: "Installation", text: english });
+	sections.push({
+		id: "installation",
+		lang: "en-US",
+		title: "Installation",
+		text: english,
+	});
 	save();
 	const mixed = requests.length;
 	assert.equal(await ask("en"), fallback);
@@ -504,11 +509,19 @@ test("knowledge answers must match the dialog language and a pinned source line"
 	line = english;
 	assert.equal(await ask("en"), english);
 	assert.ok(!JSON.stringify(requests.at(-1)).includes("Malformed source."));
+	sections.at(-1).lang = "EN";
+	save();
+	assert.equal(await ask("en"), english);
+	for (const invalid of ["en_US", "en-", "fr-CA"]) {
+		sections.at(-1).lang = invalid;
+		save();
+		assert.equal(await ask("en"), fallback);
+	}
 });
 test("knowledge validation accepts only supported explicit language codes or an omitted language", () => {
 	const section = { id: "test", title: "Test", text: "Test" };
 	const validate = (entry) => validateRevision("knowledge", JSON.stringify([entry]));
-	for (const lang of [123, null, "fr", "", "en-US", {}])
+	for (const lang of [123, null, "fr", "", "en-US", "EN", {}])
 		assert.throws(() => validate({ ...section, lang }));
 	for (const lang of ["cs", "en", "de", "ru", "uk"])
 		assert.deepEqual(validate({ ...section, lang }), [{ ...section, lang }]);

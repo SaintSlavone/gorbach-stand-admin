@@ -11,6 +11,16 @@ export function knowledgeLanguage(value: unknown) {
 		? (value as keyof typeof knowledgeLanguages)
 		: null;
 }
+export function savedKnowledgeLanguage(value: unknown) {
+	const canonical = knowledgeLanguage(value);
+	if (canonical || typeof value !== "string") return canonical;
+	try {
+		const base = new Intl.Locale(value).language;
+		return base ? knowledgeLanguage(base) : null;
+	} catch {
+		return null;
+	}
+}
 export function validateRevision(action: "knowledge" | "survey", content: string) {
 	const data = JSON.parse(content);
 	if (action === "knowledge") {
