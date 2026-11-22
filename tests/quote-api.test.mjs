@@ -527,6 +527,45 @@ test("knowledge validation accepts only supported explicit language codes or an 
 		assert.deepEqual(validate({ ...section, lang }), [{ ...section, lang }]);
 	assert.deepEqual(validate(section), [section]);
 });
+test("unavailable service restores localized starter choices and accepts either in the same dialog", async () => {
+	const fixture = readFileSync(
+		new URL("./fixtures/quote-survey.json", import.meta.url),
+		"utf8",
+	);
+	sql
+		.prepare(
+			"INSERT INTO revisions(kind,content,editor,provenance) VALUES('survey',?,'tester','staff')",
+		)
+		.run(fixture);
+	for (const [lang, action, expectedReply] of [
+		["en", "question", "Please enter your question."],
+		["de", "quote", "Für welches Produkt interessieren Sie sich?"],
+	]) {
+		const { sid, chips } = await api("start", { lang, page: "/" });
+		const alternatives = chips.filter((chip) => chip.id !== "service");
+		assert.deepEqual(
+			alternatives.map((chip) => chip.id),
+			["quote", "question"],
+		);
+		const unavailable = await api("msg", { sid, chip: "service" });
+		assert.equal(
+			unavailable.question,
+			lang === "en"
+				? "Service intake is currently unavailable."
+				: "Serviceanfragen können derzeit nicht aufgenommen werden.",
+		);
+		assert.deepEqual(unavailable.chips, alternatives);
+		const history = await api("history?sid=" + sid);
+		assert.deepEqual(history.chips, alternatives);
+		assert.equal(history.messages.at(-1).text, unavailable.question);
+		const next = await api("msg", { sid, chip: action });
+		assert.equal(
+			next.messages[0].text,
+			alternatives.find((chip) => chip.id === action).label,
+		);
+		assert.equal(next.messages.at(-1).text, expectedReply);
+	}
+});
 test("service intake restores its pinned questionnaire and submits one categorized admin lead", async () => {
 	const survey = JSON.parse(
 		readFileSync(new URL("./fixtures/quote-survey.json", import.meta.url), "utf8"),
@@ -542,13 +581,6 @@ test("service intake restores its pinned questionnaire and submits one categoriz
 	const { sid } = await api("start", { lang: "en", page: "/" });
 	const msg = (body, status = 200) => api("msg", { sid, ...body }, status);
 	const history = () => api("history?sid=" + sid);
-	const unavailable = await msg({ chip: "service" });
-	assert.equal(
-		unavailable.messages.at(-1).text,
-		"Service intake is currently unavailable.",
-	);
-	assert.deepEqual(unavailable.chips, []);
-	assert.equal((await history()).messages.at(-1).text, unavailable.question);
 	survey.services = {
 		cleaning: { title: { en: "Cleaning" }, fields: survey.products.sample.fields },
 		service: { fields: [] },

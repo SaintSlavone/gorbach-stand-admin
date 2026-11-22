@@ -1,3 +1,4 @@
+import { startCopy } from "./chat-copy";
 import { db } from "./admin";
 
 export class ApiError extends Error {
@@ -305,7 +306,7 @@ export function questionnaireTurn(
 	sid: string,
 	input: Input,
 	requested: Intake | null,
-	lang: string,
+	lang: keyof typeof prompts,
 ) {
 	const sql = db();
 	const row = sql
@@ -331,8 +332,8 @@ export function questionnaireTurn(
 	if (!rev || !Object.values(catalog).some((p) => p.fields.length)) {
 		if (service)
 			return {
-				question: (prompts[lang as keyof typeof prompts] ?? prompts.cs).unavailable,
-				chips: [],
+				question: prompts[lang].unavailable,
+				chips: startCopy(lang).chips.filter((chip) => chip.id !== "service"),
 				review: null,
 				progress: null,
 				input: "text",
