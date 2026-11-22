@@ -3,6 +3,10 @@ import { mkdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { validateRevision } from "../src/lib/validate-revision.ts";
 
+import { isDeepStrictEqual, parseArgs } from "node:util";
+const {
+	values: { upgrade },
+} = parseArgs({ options: { upgrade: { type: "boolean", default: false } } });
 const datasets = ["knowledge", "survey"].map((kind) => {
 	const file = new URL("../data/initial/" + kind + ".json", import.meta.url);
 	return [kind, JSON.stringify(validateRevision(kind, readFileSync(file, "utf8")))];
@@ -15,16 +19,26 @@ try {
 	db.exec(
 		"CREATE TABLE IF NOT EXISTS revisions(id INTEGER PRIMARY KEY,kind TEXT NOT NULL,content TEXT NOT NULL,editor TEXT NOT NULL,created TEXT DEFAULT CURRENT_TIMESTAMP)",
 	);
-	const insert = db.prepare(
-		"INSERT INTO revisions(kind,content,editor) SELECT ?,?,'initial-import' WHERE NOT EXISTS (SELECT 1 FROM revisions WHERE kind=?)",
+	const latest = db.prepare(
+		"SELECT content,editor FROM revisions WHERE kind=? ORDER BY id DESC LIMIT 1",
 	);
-	const results = datasets.map(([kind, content]) => [
-		kind,
-		insert.run(kind, content, kind).changes,
-	]);
+	const insert = db.prepare(
+		"INSERT INTO revisions(kind,content,editor) VALUES(?,?,'initial-import')",
+	);
+	const results = datasets.map(([kind, content]) => {
+		const current = latest.get(kind);
+		if (current) {
+			if (current.editor !== "initial-import")
+				return [kind, "staff revision; manual merge required"];
+			if (!upgrade) return [kind, "already imported; skipped"];
+			if (isDeepStrictEqual(JSON.parse(current.content), JSON.parse(content)))
+				return [kind, "unchanged"];
+		}
+		insert.run(kind, content);
+		return [kind, current ? "upgraded" : "imported"];
+	});
 	db.exec("COMMIT");
-	for (const [kind, changes] of results)
-		console.log(kind, changes ? "imported" : "already has revisions; skipped");
+	for (const [kind, status] of results) console.log(kind, status);
 } finally {
 	db.close();
 }
