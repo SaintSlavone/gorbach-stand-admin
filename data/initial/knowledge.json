@@ -1,0 +1,27 @@
+[
+	{
+		"id": "produkty",
+		"title": "Produkty",
+		"text": "Venkovní žaluzie\nVenkovní rolety\nHliníkové pergoly\nPurenitové boxy\nMarkýzy\nVnitřní stínění\nSítě proti hmyzu"
+	},
+	{
+		"id": "kontakt",
+		"title": "Kontakt",
+		"text": "Poptávky, čištění, dotazy a spolupráce: poptavky@gorbach-zaluzie.cz\nServis a revize: servis@gorbach-zaluzie.cz\nReklamace: reklamace@gorbach-zaluzie.cz\nObecný kontakt: info@gorbach-zaluzie.cz\nAdresa: Plzeňská 197/100, 155 00 Praha 5-Smíchov"
+	},
+	{
+		"id": "servis",
+		"title": "Servis a revize",
+		"text": "Ceny bez DPH. Účtuje se každá započatá hodina. Náhradní díly se hradí zvlášť.\nDiagnostika nebo běžná oprava: 700 Kč za hodinu na osobu, obvykle jeden technik.\nVýškové a nadstandardní práce: 800 Kč za hodinu na osobu, většinou dva technici.\nPlošina: cena podle výšky a přístupu.\nDoprava: 15 Kč/km.\nMarný výjezd při neoprávněné reklamaci: 3 000 Kč.\nRevize techniky zakoupené u GORBACH: jednou ročně zdarma. U jiného dodavatele se cena stanoví individuálně.\nÚhrada po zásahu: kartou nebo hotově."
+	},
+	{
+		"id": "spoluprace",
+		"title": "Spolupráce",
+		"text": "Při spolupráci na stavbě se realizace přizpůsobuje etapám projektu a návaznosti jednotlivých profesí. Produktové poptávky a žádosti o cenovou nabídku vyřizuje obchodní oddělení."
+	},
+	{
+		"id": "cisteni",
+		"title": "Čištění",
+		"text": "Čištění venkovních žaluzií a oken je dostupné v Praze a okolí. Při přípravě nabídky se zohledňuje přístup k žaluziím a potřeba lešení nebo výsuvného žebříku."
+	}
+]
