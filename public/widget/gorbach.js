@@ -8,6 +8,13 @@ const surveyLabels = {
     ru: { confirm: "Подтвердить выбор", step: "Шаг", contact: "Телефон или эл. почта", submit: "Отправить заявку", receipt: "Номер заявки", invalidContact: "Введите действительный номер телефона или адрес электронной почты." },
     uk: { confirm: "Підтвердити вибір", step: "Крок", contact: "Телефон або ел. пошта", submit: "Надіслати заявку", receipt: "Номер заявки", invalidContact: "Введіть дійсний номер телефону або адресу електронної пошти." },
 };
+const attachmentLabels = {
+    cs: ["Přiložit soubor", "Nahrávání…", "Potvrdit přílohy", "Nahraďte přílohu, jejíž platnost vypršela.", "Nepodporovaný typ souboru.", "Soubor je příliš velký.", "Příliš mnoho příloh.", "Překročen celkový limit velikosti.", "Vyberte platnou přílohu.", "Přílohy"],
+    en: ["Attach file", "Uploading…", "Confirm attachments", "Replace the expired attachment.", "Unsupported file type.", "The file is too large.", "Too many attachments.", "The total upload size limit was reached.", "Select a valid attachment.", "Attachments"],
+    de: ["Datei anhängen", "Wird hochgeladen…", "Anhänge bestätigen", "Ersetzen Sie den abgelaufenen Anhang.", "Nicht unterstützter Dateityp.", "Die Datei ist zu groß.", "Zu viele Anhänge.", "Die Gesamtgröße wurde überschritten.", "Wählen Sie einen gültigen Anhang.", "Anhänge"],
+    ru: ["Прикрепить файл", "Загрузка…", "Подтвердить вложения", "Замените просроченное вложение.", "Тип файла не поддерживается.", "Файл слишком большой.", "Слишком много вложений.", "Превышен общий размер вложений.", "Выберите действительное вложение.", "Вложения"],
+    uk: ["Прикріпити файл", "Завантаження…", "Підтвердити вкладення", "Замініть прострочене вкладення.", "Тип файлу не підтримується.", "Файл завеликий.", "Забагато вкладень.", "Перевищено загальний розмір вкладень.", "Виберіть дійсне вкладення.", "Вкладення"],
+};
 const script = document.currentScript;
 const endpoint = script?.dataset.api;
 if (endpoint && script) {
@@ -79,15 +86,25 @@ function mountWidget(api) {
     input.setAttribute("aria-label", inputLabel);
     send.textContent = sendLabel;
     reset.textContent = resetLabel;
+    let attachmentField;
+    let uploaded = [];
+    const names = Object.create(null);
+    const [attach, uploading, confirmFiles, recovery, typeError, sizeError, countError, totalError, invalidFile, attachments] = attachmentLabels[lang];
+    const uploadErrors = { type: typeError, size: sizeError, count: countError, total: totalError, invalid_attachment: invalidFile };
     let sid = "";
     let ready = false;
     let busy = false;
     const storageKey = "gorbach-sid";
     try {
         sid = localStorage.getItem(storageKey) || "";
+        const saved = JSON.parse(localStorage.getItem(storageKey + "-files-" + sid) ?? "{}");
+        Object.assign(names, saved);
     }
     catch { }
     function saveSession(id) {
+        uploaded = [];
+        for (const key of Object.keys(names))
+            delete names[key];
         sid = id;
         try {
             localStorage.setItem(storageKey, id);
@@ -102,14 +119,14 @@ function mountWidget(api) {
         const response = await fetch(url, {
             method: body ? "POST" : "GET",
             credentials: "omit",
-            headers: body ? { "Content-Type": "application/json" } : undefined,
-            body: body && JSON.stringify(body),
+            headers: body && !(body instanceof FormData) ? { "Content-Type": "application/json" } : undefined,
+            body: body instanceof FormData ? body : body && JSON.stringify(body),
         });
         const data = await response.json();
         if (!response.ok) {
             if (route !== "submit" && response.status === 404 && data.error === "unknown_session")
                 throw new Error("unknown_session");
-            throw new Error(data.error === "invalid_contact" ? "invalid_contact" : "request_failed");
+            throw new Error(typeof data.error === "string" ? data.error : "request_failed");
         }
         return data;
     }
@@ -121,7 +138,8 @@ function mountWidget(api) {
         return control;
     }
     async function answer(payload) {
-        render(await request("msg", { sid, ...payload }), false);
+        const screen = await request("msg", { sid, ...payload });
+        render(screen, false);
     }
     function renderReceipt(leadId) {
         const receipt = document.createElement("p");
@@ -132,6 +150,10 @@ function mountWidget(api) {
         list.scrollTop = list.scrollHeight;
     }
     function renderSurvey(screen) {
+        attachmentField = screen.lead_id ? null : screen.attachmentField;
+        uploaded = attachmentField ? screen.pendingAttachments ?? [] : [];
+        for (const file of uploaded)
+            names[file.id] = file.name;
         if (screen.lead_id) {
             renderReceipt(screen.lead_id);
             return;
@@ -139,7 +161,57 @@ function mountWidget(api) {
         survey.replaceChildren();
         input.placeholder = screen.input === "phone" ? copy.contact : inputLabel;
         input.setAttribute("aria-label", input.placeholder);
-        form.hidden = !!screen.review;
+        form.hidden = !!screen.review || attachmentField?.type === "file";
+        const confirmed = [...new Set((screen.attachmentAnswers ?? []).flatMap(item => Object.values(item.fields).flat()))];
+        if (confirmed.length) {
+            const line = document.createElement("p");
+            line.textContent = attachments + " · " + confirmed.map(id => names[id] ?? id).join(", ");
+            survey.append(line);
+        }
+        if (attachmentField) {
+            const status = document.createElement("p");
+            status.setAttribute("role", "status");
+            status.textContent = screen.attachmentRecovery ? recovery : "";
+            const picker = document.createElement("input");
+            picker.type = "file";
+            picker.accept = ".jpg,.jpeg,.png,.webp,.heic,.heif,.pdf,.mp4,.mov";
+            picker.setAttribute("aria-label", attach);
+            const files = document.createElement("p");
+            const confirm = button(confirmFiles, () => void run(() => answer({ files: uploaded.map(file => file.id) })));
+            const update = () => {
+                files.textContent = uploaded.map(file => file.name).join(", ");
+                confirm.disabled = !uploaded.length;
+            };
+            update();
+            picker.onchange = () => {
+                const file = picker.files?.[0];
+                if (!file)
+                    return;
+                picker.value = "";
+                void run(async () => {
+                    status.textContent = uploading;
+                    try {
+                        const data = new FormData();
+                        data.set("sid", sid);
+                        data.set("file", file);
+                        const result = await request("file", data);
+                        uploaded.push(result.file);
+                        names[result.file.id] = result.file.name;
+                        try {
+                            localStorage.setItem(storageKey + "-files-" + sid, JSON.stringify(names));
+                        }
+                        catch { }
+                        update();
+                    }
+                    finally {
+                        status.textContent = screen.attachmentRecovery ? recovery : "";
+                    }
+                });
+            };
+            survey.append(picker, status, files);
+            if (attachmentField.type === "file")
+                survey.append(confirm);
+        }
         if (screen.progress) {
             const progress = document.createElement("legend");
             progress.textContent = `${copy.step} ${screen.progress.step} / ${screen.progress.total}`;
@@ -194,7 +266,19 @@ function mountWidget(api) {
             survey.append(confirm);
         if (screen.review) {
             survey.append(button(copy.submit, () => void run(async () => {
-                const { lead_id } = await request("submit", { sid });
+                let lead_id;
+                try {
+                    ({ lead_id } = await request("submit", { sid }));
+                }
+                catch (cause) {
+                    if (!(cause instanceof Error) || cause.message !== "incomplete")
+                        throw cause;
+                    const history = await request("history");
+                    render(history, true);
+                    if (history.attachmentRecovery || history.lead_id)
+                        return;
+                    throw cause;
+                }
                 if (typeof lead_id !== "string" || !lead_id)
                     throw new Error("missing_lead_id");
                 renderReceipt(lead_id);
@@ -248,7 +332,7 @@ function mountWidget(api) {
         }
         catch (cause) {
             error.textContent = cause instanceof Error && cause.message === "invalid_contact"
-                ? copy.invalidContact : errorLabel;
+                ? copy.invalidContact : (cause instanceof Error && Object.hasOwn(uploadErrors, cause.message) ? uploadErrors[cause.message] : errorLabel);
             if (cause instanceof Error && cause.message === "unknown_session") {
                 ready = false;
                 try {
@@ -277,7 +361,9 @@ function mountWidget(api) {
                 await restore();
             if (form.hidden)
                 return;
-            await answer({ text });
+            if (attachmentField?.type === "text+file" && !uploaded.length)
+                throw new Error("invalid_attachment");
+            await answer(attachmentField?.type === "text+file" ? { text, files: uploaded.map(file => file.id) } : { text });
             input.value = "";
             input.focus();
         });
