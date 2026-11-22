@@ -1,3 +1,4 @@
+import { expiryCutoff } from "./attachments";
 import { startCopy } from "./chat-copy";
 import { db } from "./admin";
 
@@ -80,7 +81,12 @@ type Field = {
 type Product = { title?: Record<string, string>; fields: Field[] };
 type Catalog = Record<string, Product>;
 type Answer = string | string[];
-type Item = { product: string; answers: Record<string, Answer>; notes?: string };
+type Item = {
+	product: string;
+	answers: Record<string, Answer>;
+	attachments?: Record<string, string[]>;
+	notes?: string;
+};
 type Intake = "quote" | "service";
 type State = {
 	intake?: Intake;
@@ -90,8 +96,18 @@ type State = {
 	name: string;
 	contact: string;
 };
-type Input = { values: string[]; kind: "text" | "chip" | "chips" };
+type Input = { values: string[]; kind: "text" | "chip" | "chips"; files?: string[] };
 export function readInput(body: Record<string, unknown>): Input {
+	const files = body.files;
+	if (
+		files !== undefined &&
+		(!Array.isArray(files) ||
+			!files.length ||
+			files.length > 5 ||
+			!files.every((id) => typeof id === "string"))
+	)
+		throw new ApiError(400, "invalid_attachment");
+	if (files && !Object.hasOwn(body, "text")) body = { ...body, text: "attachment" };
 	const keys = (["text", "chip", "chips"] as const).filter((k) => Object.hasOwn(body, k));
 	if (keys.length !== 1) throw new ApiError(400, "invalid_input");
 	const kind = keys[0],
@@ -104,7 +120,11 @@ export function readInput(body: Record<string, unknown>): Input {
 		!values.every((v) => typeof v === "string" && v.trim() && Array.from(v).length <= 800)
 	)
 		throw new ApiError(400, kind === "text" ? "invalid_text" : "invalid_chip");
-	return { kind, values: values.map((v) => v.trim()) };
+	return {
+		files: files as string[] | undefined,
+		kind,
+		values: values.map((v) => v.trim()),
+	};
 }
 const blank = (intake: Intake = "quote"): State => ({
 	intake,
@@ -134,7 +154,11 @@ function pending(item: Item, product: Product) {
 	const todo = active(item, product).filter((f) => !Object.hasOwn(item.answers, f.id));
 	for (const priority of ["required", "recommended", "optional"]) {
 		const fields = todo.filter((f) => f.priority === priority);
-		if (fields.length) return priority === "optional" ? fields : fields.slice(0, 1);
+		if (fields.length)
+			return priority === "optional" &&
+				!fields.some((f) => ["file", "text+file"].includes(f.type))
+				? fields
+				: fields.slice(0, 1);
 	}
 	return [];
 }
@@ -189,6 +213,10 @@ function view(state: State, catalog: Catalog, lang = "cs") {
 		item && product ? active(item, product).filter((f) => f.priority === "required") : [];
 	const total = required.length + 1;
 	const base = {
+		attachmentAnswers: state.items.map((item) => ({
+			product: item.product,
+			fields: item.attachments ?? {},
+		})),
 		multi: false,
 		input: "text",
 		pending: false,
@@ -217,6 +245,9 @@ function view(state: State, catalog: Catalog, lang = "cs") {
 			...base,
 			question: fields.map((f) => f.translations?.[lang]?.q ?? f.q).join("\n"),
 			multi: !grouped && f.type === "multi",
+			attachmentField: ["file", "text+file"].includes(f.type)
+				? { id: f.id, type: f.type }
+				: null,
 			chips: [
 				...(grouped ? [] : (f.chips ?? [])).map((v) => chip(v, answerLabel(f, lang, v))),
 				chip("skip", prompt.skip),
@@ -240,7 +271,7 @@ function view(state: State, catalog: Catalog, lang = "cs") {
 		review: review(state),
 	};
 }
-function answer(state: State, catalog: Catalog, input: Input) {
+function answer(state: State, catalog: Catalog, input: Input, sid: string) {
 	const { values, kind } = input,
 		v = values[0];
 	if (state.choosing) {
@@ -267,6 +298,19 @@ function answer(state: State, catalog: Catalog, input: Input) {
 					if (!Object.hasOwn(item.answers, field.id)) item.answers[field.id] = "neví";
 			return;
 		}
+		if (["file", "text+file"].includes(f.type)) {
+			if (
+				!validFiles(sid, input.files) ||
+				(f.type === "text+file" && (kind !== "text" || v === "attachment"))
+			)
+				throw new ApiError(400, "invalid_attachment");
+			item.attachments ??= {};
+			item.attachments[f.id] = [...new Set(input.files!)];
+			item.answers[f.id] = f.type === "file" ? "attachment" : v;
+			state.skips = 0;
+			return;
+		}
+		if (input.files) throw new ApiError(400, "invalid_attachment");
 		const options = f.chips ?? [];
 		if (fields.length > 1) {
 			if (kind !== "text") throw new ApiError(400, "invalid_answer");
@@ -347,7 +391,7 @@ export function questionnaireTurn(
 	}
 	if (row) {
 		for (const item of state.items) Object.setPrototypeOf(item.answers, null);
-		answer(state, catalog, input);
+		answer(state, catalog, input, sid);
 	}
 	const screen = view(state, catalog, lang);
 	sql
@@ -384,7 +428,13 @@ export function submitLead(sid: string) {
 			continue;
 		}
 		for (const f of active(item, product))
-			if (f.priority === "required" && !Object.hasOwn(item.answers, f.id))
+			if (
+				f.priority === "required" &&
+				(!Object.hasOwn(item.answers, f.id) ||
+					(["file", "text+file"].includes(f.type) &&
+						item.answers[f.id] !== "neví" &&
+						!validFiles(sid, item.attachments?.[f.id])))
+			)
 				missing.push(f.id);
 	}
 	if (!state.name.trim()) missing.push("name");
@@ -422,4 +472,16 @@ export function submitLead(sid: string) {
 			JSON.stringify(summary),
 		);
 	return { lead_id: id };
+}
+
+function validFiles(sid: string, files?: string[]) {
+	return (
+		!!files?.length &&
+		files.every(
+			(id) =>
+				!!db()
+					.prepare("SELECT 1 FROM files WHERE id=? AND dialog=? AND created>?")
+					.get(id, sid, expiryCutoff()),
+		)
+	);
 }

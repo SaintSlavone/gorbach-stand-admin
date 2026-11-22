@@ -44,3 +44,9 @@ Import knowledge before starting a conversation. General text uses the revision 
 Gemini reserves each provider attempt (including a retry) in SQLite before sending it. Each dialog and client IP has 12 attempts per rolling minute. The site-wide default is 1,500 attempts per Prague calendar day; set `GORBACH_DAY_LIMIT_MSGS` to a nonnegative integer to override it. Zero disables paid requests. Provider failures consume their reservation. Quote turns do not consume this budget.
 
 Behind a trusted reverse proxy, configure it to overwrite `X-Real-IP` with the actual client address, restrict direct access to the app, then set `GORBACH_TRUST_PROXY=true`. The app hashes validated addresses. Without that configuration, or if an address is missing or invalid, requests share a conservative IP bucket. Visitor email addresses, phone patterns, URLs and identifying introduction clauses are filtered from the outbound question; the local transcript retains the original.
+
+## Questionnaire attachment confirmation
+
+Upload with multipart POST /api/file first. Then confirm the returned file ID using POST /api/msg with {"sid":"…","files":["file-id"]} for a file field, or {"sid":"…","text":"description","files":["file-id"]} for text+file. Uploading alone does not advance the survey. The existing skip chip remains available.
+
+Survey responses expose attachmentField with id and type while a file question is active, and attachmentAnswers as product entries with a fields map from field ID to attachment IDs. History restores these values. Confirmed references are also stored in each review product's attachments map. Required references are checked again on submission. Expired or foreign references return invalid_attachment during confirmation, or incomplete during submission.
