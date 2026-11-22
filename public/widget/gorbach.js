@@ -154,7 +154,8 @@ function mountWidget(api) {
                     const term = document.createElement("dt");
                     const detail = document.createElement("dd");
                     term.textContent = item.questionLabels?.[field] ?? field;
-                    detail.textContent = Array.isArray(value) ? value.join(", ") : value;
+                    const answer = item.answerLabels?.[field] ?? value;
+                    detail.textContent = Array.isArray(answer) ? answer.join(", ") : answer;
                     answers.append(term, detail);
                 }
                 survey.append(title, answers);
