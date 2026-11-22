@@ -147,7 +147,7 @@ async function dispatch(req: Request, route: Endpoint) {
 			input.kind !== "chips" &&
 			(["quote", copy[lang][2].toLowerCase()].includes(value.toLowerCase()) ||
 				(input.kind === "text" &&
-					/(?:\b(?:price|cost|quote|preis|cena|cenu|kolik stojí)\b|сколько стоит|ціна|вартість)/iu.test(
+					/(?:(?<![\p{L}\p{M}\p{N}_])(?:price|cost|quote|preis|cena|cenu|kolik stojí)(?![\p{L}\p{M}\p{N}_])|сколько стоит|ціна|вартість)/iu.test(
 						value,
 					)));
 		const survey = quoteTurn(sid, input, quoteRequested);

@@ -93,3 +93,30 @@ test("a second product must reach review before concurrent submissions create on
 	assert.deepEqual(await api("submit", { sid }), first);
 	assert.equal(count(), 1);
 });
+test("localized price phrases open product selection and ordinary text stays in chat", async () => {
+	for (const text of [
+		"Kolik stojí?",
+		"cost",
+		"Price?",
+		"quote",
+		"Preis?",
+		"cena",
+		"cenu",
+		"сколько стоит",
+		"ціна",
+		"вартість",
+	]) {
+		const sid = await start();
+		const result = await api("msg", { sid, text });
+		assert.ok(
+			result.chips.some((c) => c.id === "sample"),
+			text,
+		);
+	}
+	for (const text of ["Dobrý den!", "Kolik stojících lidí?", "necena"]) {
+		const sid = await start();
+		const result = await api("msg", { sid, text });
+		assert.deepEqual(result.chips, [], text);
+		assert.equal(result.messages.at(-1).text, "Děkujeme za zprávu.");
+	}
+});
