@@ -70,7 +70,7 @@ async function dispatch(req: Request, route: Endpoint) {
 	if (route === "status")
 		return {
 			enabled: true,
-			public: process.env.GORBACH_CHAT_PUBLIC === "true",
+			public: (process.env.GORBACH_CHAT_PUBLIC ?? "true") === "true",
 			start: startCopy(language(url.searchParams.get("lang"))),
 		};
 	if (route === "file") {

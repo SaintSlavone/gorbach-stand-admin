@@ -4,11 +4,11 @@ Use Node.js 24, run `npm ci` and `npm run dev`, then open the stand at `/` or th
 
 ## Test the chat widget
 
-Public mode is disabled by default. Open `/#gzbot` on the stand to enable preview mode in your browser. The browser remembers this setting across reloads. Open `/#gzbot-off` to turn preview mode off. To show the launcher to everyone without a preview link, set `GORBACH_CHAT_PUBLIC=true` in the server environment and restart the app.
+Public mode is enabled by default. To restrict access to preview mode, set `GORBACH_CHAT_PUBLIC=false` and restart the app. Open `/#gzbot` on the stand to enable preview mode in your browser. The browser remembers this setting across reloads. Open `/#gzbot-off` to turn preview mode off. To show the launcher to everyone without a preview link, set `GORBACH_CHAT_PUBLIC=true` in the server environment and restart the app.
 
 ### Browser smoke test
 
-1. Open `/#gzbot`, then open the chat launcher.
+1. Open `/` in a fresh browser session, then open the chat launcher.
 2. Send a distinctive message and wait for the reply.
 3. Reload the page in the same browser. Reopen the chat and confirm that your message and the reply are both visible in order.
 4. Open `/admin` and sign in with a staff account. Select **Rozhovory** (conversations), search for your message, and open the matching dialog to verify the same exchange.
