@@ -126,21 +126,26 @@ async function dispatch(req: Request, route: Endpoint) {
 	const sid = route === "history" ? url.searchParams.get("sid") : body.sid;
 	if (typeof sid !== "string" || !/^[a-f0-9]{48}$/.test(sid))
 		throw new ApiError(400, "invalid_sid");
+	if (route === "history") {
+		const rows = db()
+			.prepare(
+				"SELECT m.role,m.body AS text,m.chips FROM dialogs d LEFT JOIN messages m ON m.dialog=d.id WHERE d.id=? ORDER BY m.id",
+			)
+			.all(sid);
+		if (!rows.length) throw new ApiError(404, "unknown_session");
+		return {
+			messages: rows
+				.filter((row) => row.role !== null)
+				.map(({ role, text }) => ({ role, text })),
+			chips: JSON.parse(String(rows.at(-1)?.chips ?? "[]")),
+		};
+	}
 	return transaction(() => {
 		const dialog = db().prepare("SELECT lang,page,utm FROM dialogs WHERE id=?").get(sid);
 		if (!dialog) throw new ApiError(404, "unknown_session");
 		const lang = language(dialog.lang);
 		if (route === "reset")
 			return { sid: start(lang, String(dialog.page), String(dialog.utm)).sid };
-		if (route === "history") {
-			const rows = db()
-				.prepare("SELECT role,body AS text,chips FROM messages WHERE dialog=? ORDER BY id")
-				.all(sid);
-			return {
-				messages: rows.map(({ role, text }) => ({ role, text })),
-				chips: JSON.parse(String(rows.at(-1)?.chips ?? "[]")),
-			};
-		}
 		const text = body.text;
 		if (typeof text !== "string" || !text.trim() || Array.from(text).length > 800)
 			throw new ApiError(400, "invalid_text");
