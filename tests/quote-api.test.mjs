@@ -63,13 +63,13 @@ after(async () => {
 	globalThis.fetch = originalFetch;
 	// The app owns a process-lifetime SQLite connection. Windows releases it on exit.
 });
-async function api(route, body, status = 200) {
+async function api(route, body, status = 200, headers = {}) {
 	const response = await fetch(
 		origin + "/api/" + route,
 		body
 			? {
 					method: "POST",
-					headers: { "Content-Type": "application/json" },
+					headers: { "Content-Type": "application/json", ...headers },
 					body: JSON.stringify(body),
 				}
 			: {},
@@ -266,6 +266,7 @@ test("English prompts and translated choices retain the displayed labels and sta
 	);
 });
 test("general questions use pinned knowledge and restore validated replies and fallbacks", async () => {
+	sql.exec("DELETE FROM gemini_attempts");
 	const old = "The showroom opens at nine.";
 	addKnowledge(old);
 	const { sid } = await api("start", {
@@ -342,4 +343,58 @@ test("general questions use pinned knowledge and restore validated replies and f
 		process.env.GEMINI_API_KEY = "test-only";
 	}
 	assert.equal((await api("history?sid=" + sid)).messages.at(-1).text, fallback);
+});
+test("concurrent provider attempts respect rolling session and IP limits and the daily budget", async () => {
+	process.env.GORBACH_TRUST_PROXY = "true";
+	process.env.GORBACH_DAY_LIMIT_MSGS = "1500";
+	const sids = await Promise.all(Array.from({ length: 13 }, () => start()));
+	provider = () =>
+		Response.json({
+			candidates: [
+				{
+					finishReason: "STOP",
+					content: { parts: [{ text: JSON.stringify({ unknown: true }) }] },
+				},
+			],
+		});
+	async function burst(session, ip, expected, limit) {
+		sql.exec("DELETE FROM gemini_attempts");
+		const prior = requests.length;
+		const responses = await Promise.all(
+			sids.map((_, i) =>
+				api("msg", { sid: session(i), text: "When do you open?" }, 200, {
+					"x-real-ip": ip(i),
+				}),
+			),
+		);
+		assert.equal(requests.length - prior, expected);
+		assert.equal(
+			responses.filter((r) => r.messages[1].text === limit).length,
+			13 - expected,
+		);
+	}
+	try {
+		await burst(
+			() => sids[0],
+			(i) => "192.0.2." + (i + 1),
+			12,
+			"Zkuste to prosím později.",
+		);
+		await burst(
+			(i) => sids[i],
+			() => "192.0.2.1",
+			12,
+			"Zkuste to prosím později.",
+		);
+		process.env.GORBACH_DAY_LIMIT_MSGS = "2";
+		await burst(
+			(i) => sids[i],
+			(i) => "192.0.2." + (i + 1),
+			2,
+			"Zkuste to prosím později. info@gorbach-zaluzie.cz",
+		);
+	} finally {
+		delete process.env.GORBACH_TRUST_PROXY;
+		delete process.env.GORBACH_DAY_LIMIT_MSGS;
+	}
 });

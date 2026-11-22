@@ -40,6 +40,7 @@ export async function knowledgeAnswer(
 	question: string,
 	lang: Language,
 	content: string | null,
+	reserve: () => "allowed" | "daily" | "minute",
 ) {
 	const fallback = { text: messages[lang][1], unknown: true };
 	const key = process.env.GEMINI_API_KEY,
@@ -84,6 +85,20 @@ export async function knowledgeAnswer(
 			},
 		};
 		for (let attempt = 0; attempt < 2; attempt++) {
+			const quota = reserve();
+			if (quota !== "allowed") {
+				const wait = {
+					cs: "Zkuste to prosím později.",
+					en: "Please try again later.",
+					de: "Bitte versuchen Sie es später erneut.",
+					ru: "Попробуйте позже.",
+					uk: "Спробуйте пізніше.",
+				}[lang];
+				return {
+					text: quota === "daily" ? wait + " info@gorbach-zaluzie.cz" : wait,
+					unknown: false,
+				};
+			}
 			const response = await fetch(
 				"https://generativelanguage.googleapis.com/v1beta/models/" +
 					model +

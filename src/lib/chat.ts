@@ -1,3 +1,4 @@
+import { clientBucket, reserveGeminiAttempt } from "./gemini-quota";
 import { knowledgeAnswer, questionPrompt } from "./knowledge-answer";
 import { ApiError, quoteTurn, labelReview, submitLead, readInput } from "./quote";
 import { randomBytes } from "node:crypto";
@@ -244,7 +245,10 @@ async function dispatch(req: Request, route: Endpoint) {
 	});
 	if (!("general" in turn) || !turn.general) return turn;
 	const { text, lang, content } = turn.general;
-	const answer = await knowledgeAnswer(text, lang, content);
+	const ip = clientBucket(req);
+	const answer = await knowledgeAnswer(text, lang, content, () =>
+		transaction(() => reserveGeminiAttempt(sid, ip)),
+	);
 	return transaction(() => {
 		if (!db().prepare("SELECT 1 FROM dialogs WHERE id=?").get(sid))
 			throw new ApiError(404, "unknown_session");
