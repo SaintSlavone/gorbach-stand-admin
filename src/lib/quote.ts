@@ -9,7 +9,50 @@ export class ApiError extends Error {
 		super(key);
 	}
 }
+const prompts = {
+	cs: {
+		product: "O jaký produkt máte zájem?",
+		name: "Jak se jmenujete?",
+		contact: "Jaký je váš telefon nebo e-mail?",
+		summary: "Shrnutí poptávky",
+		skip: "Přeskočit",
+		add: "Přidat další produkt",
+	},
+	en: {
+		product: "Which product are you interested in?",
+		name: "What is your name?",
+		contact: "What is your phone number or email address?",
+		summary: "Quote summary",
+		skip: "Skip",
+		add: "Add another product",
+	},
+	de: {
+		product: "Für welches Produkt interessieren Sie sich?",
+		name: "Wie heißen Sie?",
+		contact: "Wie lautet Ihre Telefonnummer oder E-Mail-Adresse?",
+		summary: "Zusammenfassung der Anfrage",
+		skip: "Überspringen",
+		add: "Weiteres Produkt hinzufügen",
+	},
+	ru: {
+		product: "Какой продукт вас интересует?",
+		name: "Как вас зовут?",
+		contact: "Какой у вас номер телефона или адрес электронной почты?",
+		summary: "Сводка заявки",
+		skip: "Пропустить",
+		add: "Добавить ещё один продукт",
+	},
+	uk: {
+		product: "Який продукт вас цікавить?",
+		name: "Як вас звати?",
+		contact: "Який у вас номер телефону або адреса електронної пошти?",
+		summary: "Підсумок заявки",
+		skip: "Пропустити",
+		add: "Додати ще один продукт",
+	},
+};
 type Field = {
+	translations?: Record<string, { q?: string; chips?: Record<string, string> }>;
 	id: string;
 	q: string;
 	priority: "required" | "recommended" | "optional";
@@ -97,13 +140,14 @@ export function labelReview(
 				questionLabels: Object.fromEntries(
 					product.fields
 						.filter((f) => Object.hasOwn(item.answers, f.id))
-						.map((f) => [f.id, f.q]),
+						.map((f) => [f.id, f.translations?.[lang]?.q ?? f.q]),
 				),
 			};
 		}),
 	};
 }
-function view(state: State, catalog: Catalog) {
+function view(state: State, catalog: Catalog, lang = "cs") {
+	const prompt = prompts[lang as keyof typeof prompts] ?? prompts.cs;
 	const item = state.items.at(-1),
 		product = item && catalog[item.product];
 	const required =
@@ -124,10 +168,10 @@ function view(state: State, catalog: Catalog) {
 	if (state.choosing || !item || !product)
 		return {
 			...base,
-			question: "O jaký produkt máte zájem?",
+			question: prompt.product,
 			chips: Object.entries(catalog)
 				.filter(([, p]) => p.fields.length)
-				.map(([id, p]) => chip(id, p.title?.cs ?? id)),
+				.map(([id, p]) => chip(id, p.title?.[lang] ?? p.title?.cs ?? id)),
 			review: null,
 		};
 	const fields = pending(item, product);
@@ -136,29 +180,30 @@ function view(state: State, catalog: Catalog) {
 			grouped = fields.length > 1;
 		return {
 			...base,
-			question: fields.map((f) => f.q).join("\n"),
+			question: fields.map((f) => f.translations?.[lang]?.q ?? f.q).join("\n"),
 			multi: !grouped && f.type === "multi",
 			chips: [
-				...(grouped ? [] : (f.chips ?? [])).map((v) => chip(v)),
-				chip("skip", "Přeskočit"),
+				...(grouped ? [] : (f.chips ?? [])).map((v) =>
+					chip(v, f.translations?.[lang]?.chips?.[v] ?? v),
+				),
+				chip("skip", prompt.skip),
 			],
 			review: null,
 		};
 	}
-	if (!state.name)
-		return { ...base, question: "Jak se jmenujete?", chips: [], review: null };
+	if (!state.name) return { ...base, question: prompt.name, chips: [], review: null };
 	if (!state.contact)
 		return {
 			...base,
-			question: "Jaký je váš telefon nebo e-mail?",
+			question: prompt.contact,
 			input: "phone",
 			chips: [],
 			review: null,
 		};
 	return {
 		...base,
-		question: "Shrnutí poptávky",
-		chips: [chip("add_product", "Přidat další produkt")],
+		question: prompt.summary,
+		chips: [chip("add_product", prompt.add)],
 		review: review(state),
 	};
 }
@@ -258,7 +303,7 @@ export function quoteTurn(
 		for (const item of state.items) Object.setPrototypeOf(item.answers, null);
 		answer(state, catalog, input);
 	}
-	const screen = view(state, catalog);
+	const screen = view(state, catalog, lang);
 	sql
 		.prepare(
 			"INSERT INTO quote_sessions(dialog,version,state,screen) VALUES(?,?,?,?) ON CONFLICT(dialog) DO UPDATE SET state=excluded.state,screen=excluded.screen",

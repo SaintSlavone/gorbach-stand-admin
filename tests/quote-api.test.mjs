@@ -178,3 +178,56 @@ test("chip turns display the offered labels in replies and history", async () =>
 		labels,
 	);
 });
+test("English prompts and translated choices retain the displayed labels and stable answers", async () => {
+	const survey = JSON.parse(
+		readFileSync(new URL("./fixtures/quote-survey.json", import.meta.url), "utf8"),
+	);
+	const product = survey.products.sample;
+	product.title.en = "Sample product";
+	product.fields[1].translations = {
+		en: { q: "Which options?", chips: { A: "First option", B: "Second option" } },
+	};
+	sql
+		.prepare(
+			"INSERT INTO revisions(kind,content,editor,provenance) VALUES('survey',?,'tester','staff')",
+		)
+		.run(JSON.stringify(survey));
+	const { sid } = await api("start", { page: "/", lang: "en" });
+	const msg = (body) => api("msg", { sid, ...body });
+	const pick = await msg({ chip: "quote" });
+	assert.equal(pick.question, "Which product are you interested in?");
+	assert.equal(pick.messages[0].text, "Request a quote");
+	const stage = await msg({ chip: "sample" });
+	assert.equal(stage.messages[0].text, "Sample product");
+	assert.equal(stage.question, "Stav?");
+	const multi = await msg({ chip: "Nový" });
+	assert.equal(multi.question, "Which options?");
+	assert.deepEqual(multi.chips[0], { id: "A", label: "First option" });
+	const note = await msg({ chips: ["B", "A"] });
+	assert.equal(note.messages[0].text, "Second option, First option");
+	assert.equal(note.question, "Poznámka?");
+	const name = await msg({ chip: "skip" });
+	assert.equal(name.question, "What is your name?");
+	assert.equal(name.messages[0].text, "Skip");
+	assert.equal(
+		(await msg({ text: "Jane" })).question,
+		"What is your phone number or email address?",
+	);
+	const summary = await msg({ text: "jane@example.com" });
+	assert.equal(summary.question, "Quote summary");
+	assert.equal(summary.review.products[0].questionLabels.options, "Which options?");
+	assert.deepEqual(summary.review.products[0].answers.options, ["B", "A"]);
+	const history = await api("history?sid=" + sid);
+	assert.deepEqual(
+		history.messages.filter((m) => m.role === "visitor").map((m) => m.text),
+		[
+			"Request a quote",
+			"Sample product",
+			"Nový",
+			"Second option, First option",
+			"Skip",
+			"Jane",
+			"jane@example.com",
+		],
+	);
+});
