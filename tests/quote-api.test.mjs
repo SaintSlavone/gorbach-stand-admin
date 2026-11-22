@@ -156,3 +156,25 @@ test("review labels and answers use the pinned survey after a newer revision is 
 	});
 	assert.deepEqual((await api("history?sid=" + sid)).review, review);
 });
+test("chip turns display the offered labels in replies and history", async () => {
+	const sid = await start();
+	const labels = [];
+	for (const [payload, label] of [
+		[{ chip: "quote" }, "Poptávka"],
+		[{ chip: "sample" }, null],
+		[{ chip: "Nový" }, "Nový"],
+		[{ chips: ["B", "A"] }, "B, A"],
+	]) {
+		const history = await api("history?sid=" + sid);
+		const expected = label ?? history.chips.find((c) => c.id === "sample").label;
+		const reply = await api("msg", { sid, ...payload });
+		assert.equal(reply.messages[0].text, expected);
+		labels.push(expected);
+	}
+	assert.deepEqual(
+		(await api("history?sid=" + sid)).messages
+			.filter((m) => m.role === "visitor")
+			.map((m) => m.text),
+		labels,
+	);
+});

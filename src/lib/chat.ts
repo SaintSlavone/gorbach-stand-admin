@@ -187,8 +187,22 @@ async function dispatch(req: Request, route: Endpoint) {
 			review: null,
 			pending: false,
 		};
+		let visitorText = value;
+		if (input.kind !== "text") {
+			const last = db()
+				.prepare(
+					"SELECT chips FROM messages WHERE dialog=? AND role='bot' ORDER BY id DESC LIMIT 1",
+				)
+				.get(sid);
+			const choices: { id: string; label: string }[] = JSON.parse(
+				String(last?.chips ?? "[]"),
+			);
+			visitorText = input.values
+				.map((id) => choices.find((c) => c.id === id)?.label ?? id)
+				.join(", ");
+		}
 		const messages = [
-			{ role: "visitor", text: value },
+			{ role: "visitor", text: visitorText },
 			{ role: "bot", text: survey?.question ?? copy[lang][5] },
 		];
 		const insert = db().prepare(
