@@ -1,3 +1,4 @@
+import { knowledgeAnswer, questionPrompt } from "./knowledge-answer";
 import { ApiError, quoteTurn, labelReview, submitLead, readInput } from "./quote";
 import { randomBytes } from "node:crypto";
 import { db } from "./admin";
@@ -81,6 +82,38 @@ function start(lang: keyof typeof copy, page: string, utm: string) {
 		.run(sid, greeting, JSON.stringify(chips));
 	return { sid, messages: [{ role: "bot", text: greeting }], chips };
 }
+const generalScreen = {
+	chips: [],
+	multi: false,
+	progress: null,
+	input: "text",
+	review: null,
+	pending: false,
+};
+function saveExchange(
+	sid: string,
+	visitor: string,
+	reply: string,
+	chips: { id: string; label: string }[],
+	unknown = false,
+) {
+	const messages = [
+		{ role: "visitor", text: visitor },
+		{ role: "bot", text: reply },
+	];
+	const insert = db().prepare(
+		"INSERT INTO messages(dialog,role,body,chips,unknown) VALUES(?,?,?,?,?)",
+	);
+	for (const m of messages)
+		insert.run(
+			sid,
+			m.role,
+			m.text,
+			JSON.stringify(m.role === "bot" ? chips : []),
+			Number(m.role === "bot" && unknown),
+		);
+	return messages;
+}
 type Endpoint = "status" | "start" | "msg" | "history" | "reset" | "submit";
 async function dispatch(req: Request, route: Endpoint) {
 	const url = new URL(req.url);
@@ -156,8 +189,10 @@ async function dispatch(req: Request, route: Endpoint) {
 			...screen,
 		};
 	}
-	return transaction(() => {
-		const dialog = db().prepare("SELECT lang,page,utm FROM dialogs WHERE id=?").get(sid);
+	const turn = transaction(() => {
+		const dialog = db()
+			.prepare("SELECT lang,page,utm,knowledge_version FROM dialogs WHERE id=?")
+			.get(sid);
 		if (!dialog) throw new ApiError(404, "unknown_session");
 		const lang = language(dialog.lang);
 		if (route === "reset")
@@ -179,14 +214,15 @@ async function dispatch(req: Request, route: Endpoint) {
 			!(input.kind === "chip" && ["service", "question"].includes(value))
 		)
 			throw new ApiError(400, "invalid_chip");
-		const screen = survey ?? {
-			chips: [],
-			multi: false,
-			progress: null,
-			input: "text",
-			review: null,
-			pending: false,
-		};
+		if (!survey && input.kind === "text") {
+			const revision = db()
+				.prepare("SELECT content FROM revisions WHERE id=? AND kind='knowledge'")
+				.get(dialog.knowledge_version);
+			return {
+				general: { text: value, lang, content: revision ? String(revision.content) : null },
+			};
+		}
+		const screen = survey ?? generalScreen;
 		let visitorText = value;
 		if (input.kind !== "text") {
 			const last = db()
@@ -201,16 +237,23 @@ async function dispatch(req: Request, route: Endpoint) {
 				.map((id) => choices.find((c) => c.id === id)?.label ?? id)
 				.join(", ");
 		}
-		const messages = [
-			{ role: "visitor", text: visitorText },
-			{ role: "bot", text: survey?.question ?? copy[lang][5] },
-		];
-		const insert = db().prepare(
-			"INSERT INTO messages(dialog,role,body,chips) VALUES(?,?,?,?)",
-		);
-		for (const m of messages)
-			insert.run(sid, m.role, m.text, JSON.stringify(m.role === "bot" ? screen.chips : []));
-		return { messages, ...screen };
+		const reply =
+			survey?.question ??
+			(input.kind === "chip" && value === "question" ? questionPrompt(lang) : copy[lang][5]);
+		return { messages: saveExchange(sid, visitorText, reply, screen.chips), ...screen };
+	});
+	if (!("general" in turn) || !turn.general) return turn;
+	const { text, lang, content } = turn.general;
+	const answer = await knowledgeAnswer(text, lang, content);
+	return transaction(() => {
+		if (!db().prepare("SELECT 1 FROM dialogs WHERE id=?").get(sid))
+			throw new ApiError(404, "unknown_session");
+		if (db().prepare("SELECT 1 FROM quote_sessions WHERE dialog=?").get(sid))
+			throw new ApiError(409, "conversation_changed");
+		return {
+			messages: saveExchange(sid, text, answer.text, [], answer.unknown),
+			...generalScreen,
+		};
 	});
 }
 export function handler(route: Endpoint) {

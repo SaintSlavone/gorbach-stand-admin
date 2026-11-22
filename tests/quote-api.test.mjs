@@ -8,10 +8,30 @@ import { createServer } from "node:http";
 import { DatabaseSync } from "node:sqlite";
 import next from "next";
 
+const requests = [];
+let provider = () => Response.json({}, { status: 503 });
+const originalFetch = globalThis.fetch;
+function addKnowledge(text) {
+	sql
+		.prepare(
+			"INSERT INTO revisions(kind,content,editor,provenance) VALUES('knowledge',?,'tester','staff')",
+		)
+		.run(JSON.stringify([{ id: "section", title: "Information", text }]));
+}
 let app, server, sql, origin, directory;
 before(async () => {
 	directory = mkdtempSync(path.join(tmpdir(), "gorbach-quote-"));
 	process.env.GORBACH_DATA_DIR = directory;
+	process.env.GEMINI_API_KEY = "test-only";
+	process.env.GEMINI_MODEL = "fixture-model";
+	globalThis.fetch = async (input, init) => {
+		const url = new URL(input instanceof Request ? input.url : input);
+		if (url.hostname !== "generativelanguage.googleapis.com")
+			return originalFetch(input, init);
+		const req = new Request(input, init);
+		requests.push(await req.json());
+		return provider(req);
+	};
 	app = next({ dev: false });
 	await app.prepare();
 	server = createServer(app.getRequestHandler());
@@ -29,6 +49,7 @@ before(async () => {
 			"INSERT INTO revisions(kind,content,editor,provenance) VALUES('survey',?,'tester','staff')",
 		)
 		.run(fixture);
+	addKnowledge("Fixture knowledge");
 });
 after(async () => {
 	if (server) {
@@ -39,6 +60,7 @@ after(async () => {
 	}
 	await app?.close();
 	sql?.close();
+	globalThis.fetch = originalFetch;
 	// The app owns a process-lifetime SQLite connection. Windows releases it on exit.
 });
 async function api(route, body, status = 200) {
@@ -93,6 +115,7 @@ test("a second product must reach review before concurrent submissions create on
 	assert.deepEqual(second, first);
 	assert.deepEqual(await api("submit", { sid }), first);
 	assert.equal(count(), 1);
+	assert.equal(requests.length, 0);
 	const submitted = await api("history?sid=" + sid);
 	assert.equal(submitted.lead_id, first.lead_id);
 	assert.deepEqual(submitted.chips, []);
@@ -125,7 +148,10 @@ test("localized price phrases open product selection and ordinary text stays in 
 		const sid = await start();
 		const result = await api("msg", { sid, text });
 		assert.deepEqual(result.chips, [], text);
-		assert.equal(result.messages.at(-1).text, "Děkujeme za zprávu.");
+		assert.equal(
+			result.messages.at(-1).text,
+			"Tuto informaci nemám ověřenou. Upřesní ji náš specialista.",
+		);
 	}
 });
 test("review labels and answers use the pinned survey after a newer revision is saved", async () => {
@@ -238,4 +264,76 @@ test("English prompts and translated choices retain the displayed labels and sta
 			"jane@example.com",
 		],
 	);
+});
+test("general questions use pinned knowledge and restore validated replies and fallbacks", async () => {
+	const old = "The showroom opens at nine.";
+	addKnowledge(old);
+	const { sid } = await api("start", {
+		lang: "en",
+		page: "/private-page",
+		utm: { name: "secret-campaign" },
+	});
+	addKnowledge("The showroom opens at noon.");
+	const msg = (body) => api("msg", { sid, ...body });
+	const initial = requests.length;
+	assert.equal(
+		(await msg({ chip: "question" })).messages[1].text,
+		"Please enter your question.",
+	);
+	assert.equal(requests.length, initial);
+	const result = (payload) =>
+		Response.json({
+			candidates: [
+				{ finishReason: "STOP", content: { parts: [{ text: JSON.stringify(payload) }] } },
+			],
+		});
+	provider = () => {
+		// An independent SQLite connection can acquire a write lock during generation.
+		sql.exec("BEGIN IMMEDIATE; ROLLBACK");
+		return result({ reply: "It opens at nine.", unknown: false, evidence: old });
+	};
+	const reply = await msg({
+		text: "When do you open? Reach me at jane@example.org or +420 123 456 789.",
+		attachments: ["private-file.pdf"],
+	});
+	assert.equal(reply.messages[1].text, "It opens at nine.");
+	const body = JSON.stringify(requests.at(-1));
+	assert.ok(body.includes(old));
+	for (const omitted of [
+		"at noon",
+		"jane@example",
+		"123 456",
+		"private-file",
+		"private-page",
+		"secret-campaign",
+		sid,
+	])
+		assert.ok(!body.includes(omitted), omitted);
+	assert.deepEqual((await api("history?sid=" + sid)).messages.slice(-2), reply.messages);
+	const fallback =
+		"I don’t have verified information on that. Our specialist can clarify.";
+	for (const callback of [
+		() => result({ unknown: true, reply: "", evidence: "" }),
+		() => result({ unknown: false, reply: "Unsupported", evidence: "absent" }),
+		() => result({ unknown: "no", reply: 17 }),
+		() => Response.json({}, { status: 429 }),
+		() => {
+			throw new DOMException("timeout", "TimeoutError");
+		},
+	]) {
+		provider = callback;
+		assert.equal((await msg({ text: "Another question?" })).messages[1].text, fallback);
+	}
+	const n = requests.length;
+	delete process.env.GEMINI_API_KEY;
+	try {
+		assert.equal(
+			(await msg({ text: "Missing configuration?" })).messages[1].text,
+			fallback,
+		);
+		assert.equal(requests.length, n);
+	} finally {
+		process.env.GEMINI_API_KEY = "test-only";
+	}
+	assert.equal((await api("history?sid=" + sid)).messages.at(-1).text, fallback);
 });
