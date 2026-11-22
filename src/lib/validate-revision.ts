@@ -36,6 +36,7 @@ export function validateRevision(action: "knowledge" | "survey", content: string
 				if (ids.size !== item.fields.length) throw Error();
 				for (const f of item.fields) {
 					if (
+						(f.only_if !== undefined && f.only_if !== "follow") ||
 						typeof f.id !== "string" ||
 						!f.id.trim() ||
 						typeof f.q !== "string" ||
@@ -52,16 +53,32 @@ export function validateRevision(action: "knowledge" | "survey", content: string
 						throw Error();
 					if (["choice", "multi"].includes(f.type) && !f.chips?.length) throw Error();
 					if (
-						f.follow &&
-						!Object.entries(f.follow).every(
-							([choice, targets]) =>
-								f.chips?.includes(choice) &&
-								Array.isArray(targets) &&
-								targets.every((id) => ids.has(id)),
-						)
+						f.follow !== undefined &&
+						(f.follow === null ||
+							typeof f.follow !== "object" ||
+							Array.isArray(f.follow) ||
+							!Object.entries(f.follow).every(
+								([choice, targets]) =>
+									f.chips?.includes(choice) &&
+									Array.isArray(targets) &&
+									targets.every((id) => ids.has(id)),
+							))
 					)
 						throw Error();
 				}
+				const fieldsById = new Map(item.fields.map((field) => [field.id, field]));
+				const reachable = new Set(
+					item.fields.filter((field) => field.only_if === undefined).map((field) => field.id),
+				);
+				// Set iteration also visits targets discovered along nested branches.
+				for (const id of reachable) {
+					const field = fieldsById.get(id)!;
+					for (const targets of Object.values(field.follow ?? {})) {
+						for (const target of targets) reachable.add(target);
+					}
+				}
+				if (reachable.size !== item.fields.length)
+					throw Error("Unreachable conditional questionnaire field");
 			}
 		}
 	}
