@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import { after, before, test } from "node:test";
-import { mkdtempSync, readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, readdirSync } from "node:fs";
+import { createHash, randomUUID } from "node:crypto";
+import { fileLimits } from "../src/lib/attachments.ts";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { once } from "node:events";
@@ -677,4 +679,145 @@ test("service intake restores its pinned questionnaire and submits one categoriz
 	assert.match(products, /sample/);
 	assert.doesNotMatch(products, /cleaning/);
 	assert.equal(requests.length, prior);
+});
+
+async function upload(sid, bytes, name = "drawing.pdf", headers = {}) {
+	const body = new FormData();
+	body.set("sid", sid);
+	body.set("file", new Blob([bytes]), name);
+	const response = await fetch(origin + "/api/file", { method: "POST", body, headers });
+	return { status: response.status, data: await response.json() };
+}
+test("uploads are linked to the correct lead and only staff can download active attachments", async () => {
+	const sid = await start(),
+		other = await start(),
+		name = "návrh.pdf",
+		bytes = Buffer.from("%PDF-1.4\nprivate fixture\n%%EOF");
+	const { status, data } = await upload(sid, bytes, name);
+	assert.equal(status, 200);
+	const { id } = data.file;
+	assert.deepEqual(data, { file: { id, name, size: bytes.length } });
+	const row = sql.prepare("SELECT * FROM files WHERE id=?").get(id);
+	assert.equal(row.dialog, sid);
+	assert.equal(row.mime, "application/pdf");
+	assert.equal(row.sha256, createHash("sha256").update(bytes).digest("hex"));
+	assert.equal(row.bytes, null);
+	assert.match(row.storage_name, /^[0-9a-f]{32}$/);
+	assert.deepEqual(
+		readFileSync(path.join(directory, "attachments", row.storage_name)),
+		bytes,
+	);
+	const url = origin + "/api/admin/files/" + id;
+	assert.equal((await fetch(url + "?sid=" + other)).status, 401);
+	const token = randomUUID();
+	sql.prepare("INSERT INTO staff VALUES(?,?,?)").run("files-test", "unused", "unused");
+	sql
+		.prepare("INSERT INTO sessions VALUES(?,?,?)")
+		.run(
+			createHash("sha256").update(token).digest("hex"),
+			"files-test",
+			Date.now() + 60000,
+		);
+	const auth = { headers: { cookie: "gz_admin=" + token } };
+	const download = await fetch(url, auth);
+	assert.equal(download.status, 200);
+	assert.match(download.headers.get("content-disposition"), /^attachment;/);
+	assert.equal(download.headers.get("content-type"), "application/octet-stream");
+	assert.deepEqual(Buffer.from(await download.arrayBuffer()), bytes);
+	const lead = sql.prepare(
+		"INSERT INTO leads(id,dialog,kind,product,created,contact,summary) VALUES(?,?,'quote',?,'now','','')",
+	);
+	lead.run("upload-owner", sid, "upload-one");
+	lead.run("upload-other", other, "upload-two");
+	const card = async (product) =>
+		(await fetch(origin + "/admin?section=leads&product=" + product, auth)).text();
+	assert.ok((await card("upload-one")).includes("/api/admin/files/" + id));
+	assert.ok(!(await card("upload-two")).includes("/api/admin/files/" + id));
+	sql
+		.prepare(
+			"INSERT INTO files(id,dialog,name,bytes,size,created) VALUES('legacy-file',?,'old.pdf',?,?,?)",
+		)
+		.run(sid, bytes, bytes.length, Date.now());
+	const legacy = await fetch(origin + "/api/admin/files/legacy-file", auth);
+	assert.deepEqual(Buffer.from(await legacy.arrayBuffer()), bytes);
+	sql.prepare("UPDATE files SET created=0 WHERE id=?").run(id);
+	assert.equal((await fetch(url, auth)).status, 404);
+	assert.ok(!(await card("upload-one")).includes("/api/admin/files/" + id));
+});
+test("uploads recognize supported media from the supplied bytes", async () => {
+	const ftyp = (brand) =>
+		Buffer.concat([Buffer.from([0, 0, 0, 16]), Buffer.from("ftyp" + brand + "0000")]);
+	for (const [ext, bytes, mime] of [
+		["jpg", Buffer.from("ffd8ffe0", "hex"), "image/jpeg"],
+		["png", Buffer.from("89504e470d0a1a0a", "hex"), "image/png"],
+		["webp", Buffer.from("RIFF0000WEBPVP8L"), "image/webp"],
+		["heic", ftyp("heic"), "image/heic"],
+		["mp4", ftyp("isom"), "video/mp4"],
+		["mov", ftyp("qt  "), "video/quicktime"],
+	]) {
+		const uploaded = await upload(await start(), bytes, "fixture." + ext);
+		assert.equal(uploaded.status, 200);
+		assert.equal(
+			sql.prepare("SELECT mime FROM files WHERE id=?").get(uploaded.data.file.id).mime,
+			mime,
+		);
+	}
+});
+test("rejected uploads and a failed metadata insert leave no attachment or stray file", async () => {
+	const sid = await start();
+	const snapshot = () => ({
+		n: sql.prepare("SELECT count(*) n FROM files").get().n,
+		files: readdirSync(path.join(directory, "attachments")).sort(),
+	});
+	const before = snapshot();
+	for (const [session, bytes, name, headers, error, status] of [
+		[sid, "ordinary text", "fake.jpg", {}, "type", 400],
+		[sid, "%PDF-1.7", "wrong.png", {}, "type", 400],
+		["bad", "%PDF-1.7", "file.pdf", {}, "invalid_sid", 400],
+		["0".repeat(48), "%PDF-1.7", "file.pdf", {}, "unknown_session", 404],
+		[sid, "%PDF-1.7", "file.pdf", { origin: "https://unapproved.invalid" }, "origin", 403],
+		[sid, Buffer.alloc(fileLimits.size + 1), "file.pdf", {}, "size", 413],
+	]) {
+		assert.deepEqual(await upload(session, bytes, name, headers), {
+			status,
+			data: { ok: false, error },
+		});
+	}
+	sql.exec(
+		"CREATE TRIGGER reject_test_file BEFORE INSERT ON files BEGIN SELECT RAISE(ABORT,'fixture'); END",
+	);
+	try {
+		assert.deepEqual(await upload(sid, "%PDF-1.7"), {
+			status: 500,
+			data: { ok: false, error: "internal" },
+		});
+	} finally {
+		sql.exec("DROP TRIGGER reject_test_file");
+	}
+	assert.deepEqual(snapshot(), before);
+});
+test("simultaneous uploads enforce count and total boundaries per dialog", async () => {
+	const sid = await start();
+	const small = "%PDF-1.7";
+	const count = await Promise.all(
+		Array.from({ length: fileLimits.count + 2 }, () => upload(sid, small)),
+	);
+	assert.equal(count.filter((r) => r.status === 200).length, fileLimits.count);
+	assert.deepEqual(
+		count.filter((r) => r.status !== 200).map((r) => r.data.error),
+		["count", "count"],
+	);
+	const other = await start();
+	const max = Buffer.alloc(fileLimits.size);
+	max.write(small);
+	const total = await Promise.all(Array.from({ length: 4 }, () => upload(other, max)));
+	assert.equal(total.filter((r) => r.status === 200).length, 3);
+	assert.deepEqual(
+		total.filter((r) => r.status !== 200).map((r) => r.data.error),
+		["total"],
+	);
+	assert.equal(
+		sql.prepare("SELECT sum(size) n FROM files WHERE dialog=?").get(other).n,
+		fileLimits.total,
+	);
 });

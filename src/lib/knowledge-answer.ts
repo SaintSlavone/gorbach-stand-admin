@@ -50,6 +50,7 @@ export async function knowledgeAnswer(
 	question: string,
 	lang: Language,
 	content: string | null,
+	attachmentCount: number,
 	reserve: () => "allowed" | "daily" | "minute",
 ) {
 	const fallback = { text: messages[lang][1], unknown: true };
@@ -79,7 +80,13 @@ export async function knowledgeAnswer(
 				{
 					role: "user",
 					parts: [
-						{ text: JSON.stringify({ sections, question: redactQuestion(question, lang) }) },
+						{
+							text: JSON.stringify({
+								sections,
+								attachmentCount,
+								question: redactQuestion(question, lang),
+							}),
+						},
 					],
 				},
 			],

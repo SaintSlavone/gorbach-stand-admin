@@ -1,3 +1,5 @@
+import { readUpload, storeUpload } from "./file-upload";
+import { writeTransaction, expiryCutoff } from "./attachments";
 import { clientBucket, reserveGeminiAttempt } from "./gemini-quota";
 import { knowledgeAnswer, questionPrompt } from "./knowledge-answer";
 import { ApiError, questionnaireTurn, labelReview, submitLead, readInput } from "./quote";
@@ -6,17 +8,9 @@ import { db } from "./admin";
 
 import { copy, language, startCopy } from "./chat-copy";
 
-function transaction<T>(work: () => T) {
-	const sql = db();
-	sql.exec("BEGIN IMMEDIATE");
-	try {
-		const result = work();
-		sql.exec("COMMIT");
-		return result;
-	} catch (error) {
-		sql.exec("ROLLBACK");
-		throw error;
-	}
+function validateSid(sid: unknown): asserts sid is string {
+	if (typeof sid !== "string" || !/^[a-f0-9]{48}$/.test(sid))
+		throw new ApiError(400, "invalid_sid");
 }
 function start(lang: keyof typeof copy, page: string, utm: string) {
 	const sid = randomBytes(24).toString("hex");
@@ -63,7 +57,7 @@ function saveExchange(
 		);
 	return messages;
 }
-type Endpoint = "status" | "start" | "msg" | "history" | "reset" | "submit";
+type Endpoint = "status" | "start" | "msg" | "history" | "reset" | "submit" | "file";
 async function dispatch(req: Request, route: Endpoint) {
 	const url = new URL(req.url);
 	if (route === "status")
@@ -72,6 +66,11 @@ async function dispatch(req: Request, route: Endpoint) {
 			public: process.env.GORBACH_CHAT_PUBLIC === "true",
 			start: startCopy(language(url.searchParams.get("lang"))),
 		};
+	if (route === "file") {
+		const { sid, name, bytes } = await readUpload(req);
+		validateSid(sid);
+		return storeUpload(sid, name, bytes);
+	}
 	let body: Record<string, unknown> = {};
 	if (req.method === "POST") {
 		try {
@@ -96,11 +95,10 @@ async function dispatch(req: Request, route: Endpoint) {
 			JSON.stringify(utm).length > 8192
 		)
 			throw new ApiError(400, "invalid_start");
-		return transaction(() => start(language(lang), page, JSON.stringify(utm)));
+		return writeTransaction(db(), () => start(language(lang), page, JSON.stringify(utm)));
 	}
 	const sid = route === "history" ? url.searchParams.get("sid") : body.sid;
-	if (typeof sid !== "string" || !/^[a-f0-9]{48}$/.test(sid))
-		throw new ApiError(400, "invalid_sid");
+	validateSid(sid);
 	if (route === "history") {
 		const rows = db()
 			.prepare(
@@ -140,7 +138,7 @@ async function dispatch(req: Request, route: Endpoint) {
 			...screen,
 		};
 	}
-	const turn = transaction(() => {
+	const turn = writeTransaction(db(), () => {
 		const dialog = db()
 			.prepare("SELECT lang,page,utm,knowledge_version FROM dialogs WHERE id=?")
 			.get(sid);
@@ -175,7 +173,16 @@ async function dispatch(req: Request, route: Endpoint) {
 				.prepare("SELECT content FROM revisions WHERE id=? AND kind='knowledge'")
 				.get(dialog.knowledge_version);
 			return {
-				general: { text: value, lang, content: revision ? String(revision.content) : null },
+				general: {
+					text: value,
+					lang,
+					attachmentCount: Number(
+						db()
+							.prepare("SELECT count(*) AS n FROM files WHERE dialog=? AND created>?")
+							.get(sid, expiryCutoff())!.n,
+					),
+					content: revision ? String(revision.content) : null,
+				},
 			};
 		}
 		const screen = survey ?? generalScreen;
@@ -199,12 +206,12 @@ async function dispatch(req: Request, route: Endpoint) {
 		return { messages: saveExchange(sid, visitorText, reply, screen.chips), ...screen };
 	});
 	if (!("general" in turn) || !turn.general) return turn;
-	const { text, lang, content } = turn.general;
+	const { text, lang, content, attachmentCount } = turn.general;
 	const ip = clientBucket(req);
-	const answer = await knowledgeAnswer(text, lang, content, () =>
-		transaction(() => reserveGeminiAttempt(sid, ip)),
+	const answer = await knowledgeAnswer(text, lang, content, attachmentCount, () =>
+		writeTransaction(db(), () => reserveGeminiAttempt(sid, ip)),
 	);
-	return transaction(() => {
+	return writeTransaction(db(), () => {
 		if (!db().prepare("SELECT 1 FROM dialogs WHERE id=?").get(sid))
 			throw new ApiError(404, "unknown_session");
 		if (db().prepare("SELECT 1 FROM quote_sessions WHERE dialog=?").get(sid))
