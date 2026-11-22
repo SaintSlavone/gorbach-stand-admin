@@ -290,13 +290,13 @@ test("general questions use pinned knowledge and restore validated replies and f
 	provider = () => {
 		// An independent SQLite connection can acquire a write lock during generation.
 		sql.exec("BEGIN IMMEDIATE; ROLLBACK");
-		return result({ reply: "It opens at nine.", unknown: false, evidence: old });
+		return result({ reply: old, unknown: false, evidence: old });
 	};
 	const reply = await msg({
 		text: "When do you open? Reach me at jane@example.org or +420 123 456 789.",
 		attachments: ["private-file.pdf"],
 	});
-	assert.equal(reply.messages[1].text, "It opens at nine.");
+	assert.equal(reply.messages[1].text, old);
 	const body = JSON.stringify(requests.at(-1));
 	assert.ok(body.includes(old));
 	for (const omitted of [
@@ -314,6 +314,8 @@ test("general questions use pinned knowledge and restore validated replies and f
 		"I don’t have verified information on that. Our specialist can clarify.";
 	for (const callback of [
 		() => result({ unknown: true, reply: "", evidence: "" }),
+		() =>
+			result({ unknown: false, reply: "The showroom opens at midnight.", evidence: old }),
 		() => result({ unknown: false, reply: "Unsupported", evidence: "absent" }),
 		() => result({ unknown: "no", reply: 17 }),
 		() => Response.json({}, { status: 429 }),
