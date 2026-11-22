@@ -1,3 +1,16 @@
+export const knowledgeLanguages = {
+	cs: "Čeština",
+	en: "English",
+	de: "Deutsch",
+	ru: "Русский",
+	uk: "Українська",
+};
+export function knowledgeLanguage(value: unknown) {
+	if (value === undefined) return "cs";
+	return typeof value === "string" && Object.hasOwn(knowledgeLanguages, value)
+		? (value as keyof typeof knowledgeLanguages)
+		: null;
+}
 export function validateRevision(action: "knowledge" | "survey", content: string) {
 	const data = JSON.parse(content);
 	if (action === "knowledge") {
@@ -6,6 +19,7 @@ export function validateRevision(action: "knowledge" | "survey", content: string
 			!data.every(
 				(s) =>
 					s &&
+					knowledgeLanguage(s.lang) !== null &&
 					typeof s.id === "string" &&
 					s.id.trim() &&
 					typeof s.title === "string" &&

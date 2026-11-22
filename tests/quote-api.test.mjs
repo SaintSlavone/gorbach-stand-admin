@@ -7,6 +7,7 @@ import { once } from "node:events";
 import { createServer } from "node:http";
 import { DatabaseSync } from "node:sqlite";
 import next from "next";
+import { validateRevision } from "../src/lib/validate-revision.ts";
 
 const requests = [];
 let provider = () => Response.json({}, { status: 503 });
@@ -456,7 +457,10 @@ test("knowledge answers must match the dialog language and a pinned source line"
 	sql.exec("DELETE FROM gemini_attempts");
 	const czech = "Montujeme venkovní žaluzie.",
 		english = "We install outdoor blinds.";
-	const sections = [{ id: "legacy", title: "Montáž", text: czech }];
+	const sections = [
+		{ id: "legacy", title: "Montáž", text: czech },
+		{ id: "malformed", title: "Invalid language", text: "Malformed source.", lang: 123 },
+	];
 	const save = () =>
 		sql
 			.prepare(
@@ -499,4 +503,14 @@ test("knowledge answers must match the dialog language and a pinned source line"
 	assert.ok(!JSON.stringify(requests.at(-1)).includes(czech));
 	line = english;
 	assert.equal(await ask("en"), english);
+	assert.ok(!JSON.stringify(requests.at(-1)).includes("Malformed source."));
+});
+test("knowledge validation accepts only supported explicit language codes or an omitted language", () => {
+	const section = { id: "test", title: "Test", text: "Test" };
+	const validate = (entry) => validateRevision("knowledge", JSON.stringify([entry]));
+	for (const lang of [123, null, "fr", "", "en-US", {}])
+		assert.throws(() => validate({ ...section, lang }));
+	for (const lang of ["cs", "en", "de", "ru", "uk"])
+		assert.deepEqual(validate({ ...section, lang }), [{ ...section, lang }]);
+	assert.deepEqual(validate(section), [section]);
 });

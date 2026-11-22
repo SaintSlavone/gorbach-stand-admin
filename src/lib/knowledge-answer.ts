@@ -1,3 +1,4 @@
+import { knowledgeLanguage } from "./validate-revision";
 const messages = {
 	cs: [
 		"Napište prosím svůj dotaz.",
@@ -57,10 +58,10 @@ export async function knowledgeAnswer(
 	if (!content || !key || !model || !/^[-\w.]+$/.test(model)) return fallback;
 	const signal = AbortSignal.timeout(15000);
 	try {
-		const source: { title: string; text: string; lang?: string }[] = JSON.parse(content);
+		const source: { title: string; text: string; lang?: unknown }[] = JSON.parse(content);
 		// Legacy knowledge sections use the Czech source document's language.
 		const sections = source
-			.filter((section) => (section.lang ?? "cs").toLowerCase().split("-")[0] === lang)
+			.filter((section) => knowledgeLanguage(section.lang) === lang)
 			.map((section) => ({ title: redact(section.title), text: redact(section.text) }));
 		if (!sections.some((s) => s.text.trim())) return fallback;
 		const request = {
