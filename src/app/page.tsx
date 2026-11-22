@@ -4,28 +4,28 @@ import "./Adaptations.scss";
 
 const samples = [
 	{
-		name: "Roller blinds",
+		name: "Rolety",
 		tone: "apricot",
-		product: "A single sheet of fabric rolls around a tube.",
+		product: "Látka se navíjí na trubku.",
 	},
 	{
-		name: "Venetian blinds",
+		name: "Žaluzie",
 		tone: "mint",
-		product: "Tilt the slats to adjust incoming light.",
+		product: "Naklopením lamel upravíte množství světla.",
 	},
 	{
-		name: "Pleated shades",
+		name: "Plisé",
 		tone: "lilac",
-		product: "Folded fabric stacks into a compact profile.",
+		product: "Skládaná látka se stáhne do kompaktního profilu.",
 	},
 ];
 
 export default function StandPage() {
 	return (
 		<main className="test-stand">
-			<h1>Widget test stand</h1>
-			<p>Hover over a sample or open it to test the page interactions.</p>
-			<section className="sample-grid" aria-label="Product samples">
+			<h1>Testovací stránka chatu</h1>
+			<p>Otevřete ukázku a prohlédněte si popis produktu.</p>
+			<section className="sample-grid" aria-label="Ukázky produktů">
 				{samples.map(({ name, tone, product }) => (
 					<details key={tone} className={`sample sample-${tone}`}>
 						<summary>
