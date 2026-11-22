@@ -36,7 +36,7 @@ export default function StandPage() {
 					</details>
 				))}
 			</section>
-			<Script src="/widget/gorbach.js" data-api="/preview-api" strategy="afterInteractive" />
+			<Script src="/widget/gorbach.js" data-api="/api" strategy="afterInteractive" />
 		</main>
 	);
 }
