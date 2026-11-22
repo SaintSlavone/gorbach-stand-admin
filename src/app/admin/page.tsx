@@ -211,7 +211,15 @@ export default async function AdminPage({
 									{(k === "status"
 										? statuses
 										: db()
-												.prepare("SELECT DISTINCT " + cols[k] + " val" + source + " ORDER BY val")
+												.prepare(
+													"SELECT DISTINCT " +
+														cols[k] +
+														" val" +
+														source +
+														" WHERE " +
+														cols[k] +
+														" <> '' ORDER BY val",
+												)
 												.all()
 												.map((r) => String(r.val))
 									).map((v) => (
@@ -229,7 +237,7 @@ export default async function AdminPage({
 					? rows.map((l) => (
 							<details key={String(l.id)}>
 								<summary>
-									{String(l.id)} · {String(l.product)} · {statusLabel(String(l.status))}
+									{String(l.id)} · {String(l.product || l.kind)} · {statusLabel(String(l.status))}
 								</summary>
 								<p>
 									{String(l.created)} · {String(l.kind)} · {String(l.lang)} · {String(l.page)}

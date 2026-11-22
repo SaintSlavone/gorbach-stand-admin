@@ -1,3 +1,4 @@
+import { migrateServiceProducts } from "./service-migration";
 import { ensureRevisionSchema } from "./revision-schema";
 import { DatabaseSync } from "node:sqlite";
 import { mkdirSync } from "node:fs";
@@ -38,6 +39,7 @@ export function db() {
 				.some((c) => c.name === "chips")
 		)
 			database.exec("ALTER TABLE messages ADD COLUMN chips TEXT NOT NULL DEFAULT '[]'");
+		migrateServiceProducts(database);
 		database.exec("COMMIT");
 	} catch (error) {
 		database.exec("ROLLBACK");

@@ -7,6 +7,7 @@ import { once } from "node:events";
 import { createServer } from "node:http";
 import { DatabaseSync } from "node:sqlite";
 import next from "next";
+import { migrateServiceProducts } from "../src/lib/service-migration.ts";
 import { validateRevision } from "../src/lib/validate-revision.ts";
 
 const requests = [];
@@ -614,13 +615,33 @@ test("service intake restores its pinned questionnaire and submits one categoriz
 	assert.ok(lead.lead_id);
 	assert.deepEqual(lead, repeat);
 	assert.equal((await history()).lead_id, lead.lead_id);
-	assert.deepEqual(
-		sql
-			.prepare("SELECT kind FROM leads WHERE dialog=?")
-			.all(sid)
-			.map((r) => r.kind),
-		["cleaning"],
-	);
+	const storedLead = () => sql.prepare("SELECT * FROM leads WHERE dialog=?").get(sid);
+	const serviceLead = storedLead();
+	assert.equal(serviceLead.kind, "cleaning");
+	assert.equal(serviceLead.product, "");
+	assert.equal(JSON.parse(serviceLead.fields).serviceKind, "cleaning");
+	const dialogProduct = () =>
+		sql.prepare("SELECT product FROM dialogs WHERE id=?").get(sid).product;
+	assert.equal(dialogProduct(), "");
+
+	const quoteSid = await start();
+	const quote = (input) => api("msg", { sid: quoteSid, ...input });
+	await quote({ chip: "quote" });
+	await quote({ chip: "sample" });
+	await quote({ chip: "Původní" });
+	await quote({ chip: "skip" });
+	await quote({ text: "Petr" });
+	await quote({ text: "petr@example.com" });
+	const quoteLead = await api("submit", { sid: quoteSid });
+
+	// Recreate the duplicate classifications written by the previous release.
+	sql.prepare("UPDATE leads SET product=kind WHERE dialog=?").run(sid);
+	sql.prepare("UPDATE dialogs SET product='cleaning' WHERE id=?").run(sid);
+	sql.exec("PRAGMA user_version=0");
+	migrateServiceProducts(sql);
+	assert.deepEqual(storedLead(), serviceLead);
+	assert.equal(dialogProduct(), "");
+	assert.deepEqual(await api("submit", { sid }), lead);
 	const { randomUUID, createHash } = await import("node:crypto");
 	const token = randomUUID();
 	sql.prepare("INSERT INTO staff VALUES(?,?,?)").run("filter-test", "unused", "unused");
@@ -631,13 +652,29 @@ test("service intake restores its pinned questionnaire and submits one categoriz
 			"filter-test",
 			Date.now() + 60000,
 		);
-	const admin = async (kind) =>
-		(
-			await fetch(origin + "/admin?section=leads&kind=" + kind, {
-				headers: { cookie: "gz_admin=" + token },
-			})
-		).text();
-	assert.ok((await admin("cleaning")).includes(lead.lead_id));
-	assert.ok(!(await admin("quote")).includes(lead.lead_id));
+	const admin = async (query) => {
+		const response = await fetch(origin + "/admin?" + query, {
+			headers: { cookie: "gz_admin=" + token },
+		});
+		assert.equal(response.status, 200);
+		return response.text();
+	};
+	const byKind = await admin("section=leads&kind=cleaning");
+	assert.ok(byKind.includes(lead.lead_id));
+	assert.ok(!byKind.includes(quoteLead.lead_id));
+	const productOptions = byKind.match(/<select name="product"[^>]*>(.*?)<\/select>/s)?.[1];
+	assert.ok(productOptions);
+	assert.match(productOptions, /value="sample"/);
+	assert.doesNotMatch(productOptions, /cleaning/);
+	assert.equal(productOptions.match(/value=""/g)?.length, 1);
+	const byProduct = await admin("section=leads&product=sample");
+	assert.ok(byProduct.includes(quoteLead.lead_id));
+	assert.ok(!byProduct.includes(lead.lead_id));
+	assert.ok(!(await admin("section=leads&product=cleaning")).includes(lead.lead_id));
+	const stats = await admin("section=stats");
+	const products = stats.match(/<h3>Produkty<\/h3>(.*?)<\/section>/s)?.[1];
+	assert.ok(products);
+	assert.match(products, /sample/);
+	assert.doesNotMatch(products, /cleaning/);
 	assert.equal(requests.length, prior);
 });

@@ -141,6 +141,9 @@ function pending(item: Item, product: Product) {
 const email = (s: string) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(s);
 const phone = (s: string) =>
 	/^\+?[\d ()-]+$/.test(s) && /^\d{7,15}$/.test(s.replace(/\D/g, ""));
+function selectedProduct(state: State) {
+	return state.intake === "service" ? "" : (state.items[0]?.product ?? "");
+}
 function review(state: State) {
 	return {
 		...(state.intake === "service" ? { serviceKind: state.items[0]?.product } : {}),
@@ -354,7 +357,7 @@ export function questionnaireTurn(
 		.run(sid, rev.version, JSON.stringify(state), JSON.stringify(screen));
 	sql
 		.prepare("UPDATE dialogs SET product=?,start_chip=? WHERE id=?")
-		.run(state.items[0]?.product ?? "", state.intake ?? "quote", sid);
+		.run(selectedProduct(state), state.intake ?? "quote", sid);
 	return screen.review
 		? { ...screen, review: labelReview(screen.review, catalog, lang) }
 		: screen;
@@ -409,7 +412,7 @@ export function submitLead(sid: string) {
 			id,
 			sid,
 			state.intake === "service" ? state.items[0].product : "quote",
-			state.items[0].product,
+			selectedProduct(state),
 			now.toISOString(),
 			contact,
 			(state.intake === "service" ? "Servisní požadavek: " : "Poptávka: ") +
