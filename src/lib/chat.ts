@@ -1,4 +1,4 @@
-import { ApiError, quoteTurn, submitLead, readInput } from "./quote";
+import { ApiError, quoteTurn, labelReview, submitLead, readInput } from "./quote";
 import { randomBytes } from "node:crypto";
 import { db } from "./admin";
 
@@ -122,7 +122,7 @@ async function dispatch(req: Request, route: Endpoint) {
 	if (route === "history") {
 		const rows = db()
 			.prepare(
-				"SELECT m.role,m.body AS text,m.chips,q.screen,l.id AS lead_id FROM dialogs d LEFT JOIN leads l ON l.dialog=d.id LEFT JOIN quote_sessions q ON q.dialog=d.id LEFT JOIN messages m ON m.dialog=d.id WHERE d.id=? ORDER BY m.id",
+				"SELECT m.role,m.body AS text,m.chips,q.screen,q.version,d.lang,l.id AS lead_id FROM dialogs d LEFT JOIN leads l ON l.dialog=d.id LEFT JOIN quote_sessions q ON q.dialog=d.id LEFT JOIN messages m ON m.dialog=d.id WHERE d.id=? ORDER BY m.id",
 			)
 			.all(sid);
 		if (!rows.length) throw new ApiError(404, "unknown_session");
@@ -139,10 +139,21 @@ async function dispatch(req: Request, route: Endpoint) {
 				multi: false,
 				pending: false,
 			};
+		const screen = JSON.parse(String(rows[0].screen ?? "{}"));
+		if (screen.review) {
+			const pinned = db()
+				.prepare("SELECT content FROM revisions WHERE id=?")
+				.get(rows[0].version)!;
+			screen.review = labelReview(
+				screen.review,
+				JSON.parse(String(pinned.content)).products,
+				String(rows[0].lang),
+			);
+		}
 		return {
 			messages,
 			chips: JSON.parse(String(rows.at(-1)?.chips ?? "[]")),
-			...JSON.parse(String(rows[0].screen ?? "{}")),
+			...screen,
 		};
 	}
 	return transaction(() => {
@@ -161,7 +172,7 @@ async function dispatch(req: Request, route: Endpoint) {
 					/(?:(?<![\p{L}\p{M}\p{N}_])(?:price|cost|quote|preis|cena|cenu|kolik stojí)(?![\p{L}\p{M}\p{N}_])|сколько стоит|ціна|вартість)/iu.test(
 						value,
 					)));
-		const survey = quoteTurn(sid, input, quoteRequested);
+		const survey = quoteTurn(sid, input, quoteRequested, lang);
 		if (
 			!survey &&
 			input.kind !== "text" &&

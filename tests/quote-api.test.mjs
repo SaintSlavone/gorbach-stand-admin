@@ -128,3 +128,31 @@ test("localized price phrases open product selection and ordinary text stays in 
 		assert.equal(result.messages.at(-1).text, "Děkujeme za zprávu.");
 	}
 });
+test("review labels and answers use the pinned survey after a newer revision is saved", async () => {
+	const sid = await start(),
+		msg = (body) => api("msg", { sid, ...body });
+	await msg({ chip: "quote" });
+	await msg({ chip: "sample" });
+	const newer = JSON.parse(
+		readFileSync(new URL("./fixtures/quote-survey.json", import.meta.url), "utf8"),
+	);
+	newer.products.sample.title.cs = "Updated title";
+	newer.products.sample.fields[0].q = "Updated question";
+	sql
+		.prepare(
+			"INSERT INTO revisions(kind,content,editor,provenance) VALUES('survey',?,'tester','staff')",
+		)
+		.run(JSON.stringify(newer));
+	await msg({ chip: "Nový" });
+	await msg({ chips: ["B", "A"] });
+	await msg({ chip: "skip" });
+	await msg({ text: "Jana" });
+	const { review } = await msg({ text: "jana@example.com" });
+	assert.deepEqual(review.products[0], {
+		product: "sample",
+		title: "Testovací produkt",
+		answers: { stage: "Nový", options: ["B", "A"], note: "neví" },
+		questionLabels: { stage: "Stav?", options: "Možnosti?", note: "Poznámka?" },
+	});
+	assert.deepEqual((await api("history?sid=" + sid)).review, review);
+});

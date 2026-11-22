@@ -82,6 +82,27 @@ function review(state: State) {
 		...(email(state.contact) ? { email: state.contact } : { phone: state.contact }),
 	};
 }
+export function labelReview(
+	summary: ReturnType<typeof review>,
+	catalog: Catalog,
+	lang: string,
+) {
+	return {
+		...summary,
+		products: summary.products.map((item) => {
+			const product = catalog[item.product];
+			return {
+				...item,
+				title: product.title?.[lang] ?? product.title?.cs ?? item.product,
+				questionLabels: Object.fromEntries(
+					product.fields
+						.filter((f) => Object.hasOwn(item.answers, f.id))
+						.map((f) => [f.id, f.q]),
+				),
+			};
+		}),
+	};
+}
 function view(state: State, catalog: Catalog) {
 	const item = state.items.at(-1),
 		product = item && catalog[item.product];
@@ -206,7 +227,12 @@ function answer(state: State, catalog: Catalog, input: Input) {
 	}
 	throw new ApiError(409, "already_reviewed");
 }
-export function quoteTurn(sid: string, input: Input, quoteRequested: boolean) {
+export function quoteTurn(
+	sid: string,
+	input: Input,
+	quoteRequested: boolean,
+	lang: string,
+) {
 	const sql = db();
 	const row = sql
 		.prepare(
@@ -241,7 +267,9 @@ export function quoteTurn(sid: string, input: Input, quoteRequested: boolean) {
 	sql
 		.prepare("UPDATE dialogs SET product=?,start_chip='quote' WHERE id=?")
 		.run(state.items[0]?.product ?? "", sid);
-	return screen;
+	return screen.review
+		? { ...screen, review: labelReview(screen.review, catalog, lang) }
+		: screen;
 }
 export function submitLead(sid: string) {
 	const sql = db(),
