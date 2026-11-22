@@ -83,7 +83,8 @@ test("a second product must reach review before concurrent submissions create on
 	assert.equal(count(), 0);
 	const final = await msg({ chip: "skip" });
 	assert.equal(final.review.products.length, 2);
-	assert.deepEqual((await api("history?sid=" + sid)).review, final.review);
+	const beforeSubmit = await api("history?sid=" + sid);
+	assert.deepEqual(beforeSubmit.review, final.review);
 	const [first, second] = await Promise.all([
 		api("submit", { sid }),
 		api("submit", { sid }),
@@ -92,6 +93,13 @@ test("a second product must reach review before concurrent submissions create on
 	assert.deepEqual(second, first);
 	assert.deepEqual(await api("submit", { sid }), first);
 	assert.equal(count(), 1);
+	const submitted = await api("history?sid=" + sid);
+	assert.equal(submitted.lead_id, first.lead_id);
+	assert.deepEqual(submitted.chips, []);
+	assert.equal(submitted.review, null);
+	assert.equal(submitted.progress, null);
+	assert.equal(submitted.question, undefined);
+	assert.deepEqual(submitted.messages, beforeSubmit.messages);
 });
 test("localized price phrases open product selection and ordinary text stays in chat", async () => {
 	for (const text of [

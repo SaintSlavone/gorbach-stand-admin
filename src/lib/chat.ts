@@ -122,14 +122,25 @@ async function dispatch(req: Request, route: Endpoint) {
 	if (route === "history") {
 		const rows = db()
 			.prepare(
-				"SELECT m.role,m.body AS text,m.chips,q.screen FROM dialogs d LEFT JOIN quote_sessions q ON q.dialog=d.id LEFT JOIN messages m ON m.dialog=d.id WHERE d.id=? ORDER BY m.id",
+				"SELECT m.role,m.body AS text,m.chips,q.screen,l.id AS lead_id FROM dialogs d LEFT JOIN leads l ON l.dialog=d.id LEFT JOIN quote_sessions q ON q.dialog=d.id LEFT JOIN messages m ON m.dialog=d.id WHERE d.id=? ORDER BY m.id",
 			)
 			.all(sid);
 		if (!rows.length) throw new ApiError(404, "unknown_session");
+		const messages = rows
+			.filter((row) => row.role !== null)
+			.map(({ role, text }) => ({ role, text }));
+		if (rows[0].lead_id)
+			return {
+				messages,
+				lead_id: rows[0].lead_id,
+				chips: [],
+				review: null,
+				progress: null,
+				multi: false,
+				pending: false,
+			};
 		return {
-			messages: rows
-				.filter((row) => row.role !== null)
-				.map(({ role, text }) => ({ role, text })),
+			messages,
 			chips: JSON.parse(String(rows.at(-1)?.chips ?? "[]")),
 			...JSON.parse(String(rows[0].screen ?? "{}")),
 		};
