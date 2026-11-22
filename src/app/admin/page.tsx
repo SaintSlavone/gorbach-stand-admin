@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 import { db, staff, revision } from "@/lib/admin";
+import { expiryCutoff } from "@/lib/attachments";
 import { submit } from "./actions";
 import Editor from "./Editor";
 import "./Admin.scss";
@@ -249,8 +250,10 @@ export default async function AdminPage({
 								<pre>{String(l.fields)}</pre>
 								<p>{String(l.delivery)}</p>
 								{db()
-									.prepare("SELECT id,name FROM files WHERE dialog=?")
-									.all(l.dialog)
+									.prepare(
+										"SELECT id,name FROM files WHERE dialog=? AND created>? ORDER BY created,id",
+									)
+									.all(l.dialog, expiryCutoff())
 									.map((f) => (
 										<p key={String(f.id)}>
 											<a href={"/api/admin/files/" + encodeURIComponent(String(f.id))}>

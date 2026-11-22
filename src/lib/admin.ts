@@ -1,3 +1,4 @@
+import { dataDirectory, ensureAttachmentSchema } from "./attachments";
 import { migrateServiceProducts } from "./service-migration";
 import { ensureRevisionSchema } from "./revision-schema";
 import { DatabaseSync } from "node:sqlite";
@@ -9,7 +10,7 @@ import { cookies } from "next/headers";
 let connection: DatabaseSync | undefined;
 export function db() {
 	if (connection) return connection;
-	const dir = process.env.GORBACH_DATA_DIR || path.join(process.cwd(), ".gorbach");
+	const dir = dataDirectory();
 	mkdirSync(dir, { recursive: true, mode: 0o700 });
 	const database = new DatabaseSync(path.join(dir, "admin.sqlite"));
 	database.exec(`PRAGMA foreign_keys=ON; PRAGMA journal_mode=WAL;
@@ -40,6 +41,7 @@ export function db() {
 		)
 			database.exec("ALTER TABLE messages ADD COLUMN chips TEXT NOT NULL DEFAULT '[]'");
 		migrateServiceProducts(database);
+		ensureAttachmentSchema(database);
 		database.exec("COMMIT");
 	} catch (error) {
 		database.exec("ROLLBACK");
