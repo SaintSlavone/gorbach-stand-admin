@@ -1,3 +1,4 @@
+import { ApiError, quoteTurn, submitLead, readInput } from "./quote";
 import { randomBytes } from "node:crypto";
 import { db } from "./admin";
 
@@ -55,14 +56,6 @@ function startCopy(lang: keyof typeof copy) {
 		chips: ["quote", "service", "question"].map((id, i) => ({ id, label: labels[i] })),
 	};
 }
-class ApiError extends Error {
-	constructor(
-		public status: number,
-		key: string,
-	) {
-		super(key);
-	}
-}
 function transaction<T>(work: () => T) {
 	const sql = db();
 	sql.exec("BEGIN IMMEDIATE");
@@ -88,7 +81,7 @@ function start(lang: keyof typeof copy, page: string, utm: string) {
 		.run(sid, greeting, JSON.stringify(chips));
 	return { sid, messages: [{ role: "bot", text: greeting }], chips };
 }
-type Endpoint = "status" | "start" | "msg" | "history" | "reset";
+type Endpoint = "status" | "start" | "msg" | "history" | "reset" | "submit";
 async function dispatch(req: Request, route: Endpoint) {
 	const url = new URL(req.url);
 	if (route === "status")
@@ -129,7 +122,7 @@ async function dispatch(req: Request, route: Endpoint) {
 	if (route === "history") {
 		const rows = db()
 			.prepare(
-				"SELECT m.role,m.body AS text,m.chips FROM dialogs d LEFT JOIN messages m ON m.dialog=d.id WHERE d.id=? ORDER BY m.id",
+				"SELECT m.role,m.body AS text,m.chips,q.screen FROM dialogs d LEFT JOIN quote_sessions q ON q.dialog=d.id LEFT JOIN messages m ON m.dialog=d.id WHERE d.id=? ORDER BY m.id",
 			)
 			.all(sid);
 		if (!rows.length) throw new ApiError(404, "unknown_session");
@@ -138,6 +131,7 @@ async function dispatch(req: Request, route: Endpoint) {
 				.filter((row) => row.role !== null)
 				.map(({ role, text }) => ({ role, text })),
 			chips: JSON.parse(String(rows.at(-1)?.chips ?? "[]")),
+			...JSON.parse(String(rows[0].screen ?? "{}")),
 		};
 	}
 	return transaction(() => {
@@ -146,17 +140,24 @@ async function dispatch(req: Request, route: Endpoint) {
 		const lang = language(dialog.lang);
 		if (route === "reset")
 			return { sid: start(lang, String(dialog.page), String(dialog.utm)).sid };
-		const text = body.text;
-		if (typeof text !== "string" || !text.trim() || Array.from(text).length > 800)
-			throw new ApiError(400, "invalid_text");
-		const messages = [
-			{ role: "visitor", text: text.trim() },
-			{ role: "bot", text: copy[lang][5] },
-		];
-		const insert = db().prepare("INSERT INTO messages(dialog,role,body) VALUES(?,?,?)");
-		for (const message of messages) insert.run(sid, message.role, message.text);
-		return {
-			messages,
+		if (route === "submit") return submitLead(sid);
+		const input = readInput(body);
+		const value = input.values.join(", ");
+		const quoteRequested =
+			input.kind !== "chips" &&
+			(["quote", copy[lang][2].toLowerCase()].includes(value.toLowerCase()) ||
+				(input.kind === "text" &&
+					/(?:\b(?:price|cost|quote|preis|cena|cenu|kolik stojí)\b|сколько стоит|ціна|вартість)/iu.test(
+						value,
+					)));
+		const survey = quoteTurn(sid, input, quoteRequested);
+		if (
+			!survey &&
+			input.kind !== "text" &&
+			!(input.kind === "chip" && ["service", "question"].includes(value))
+		)
+			throw new ApiError(400, "invalid_chip");
+		const screen = survey ?? {
 			chips: [],
 			multi: false,
 			progress: null,
@@ -164,6 +165,16 @@ async function dispatch(req: Request, route: Endpoint) {
 			review: null,
 			pending: false,
 		};
+		const messages = [
+			{ role: "visitor", text: value },
+			{ role: "bot", text: survey?.question ?? copy[lang][5] },
+		];
+		const insert = db().prepare(
+			"INSERT INTO messages(dialog,role,body,chips) VALUES(?,?,?,?)",
+		);
+		for (const m of messages)
+			insert.run(sid, m.role, m.text, JSON.stringify(m.role === "bot" ? screen.chips : []));
+		return { messages, ...screen };
 	});
 }
 export function handler(route: Endpoint) {
@@ -191,7 +202,11 @@ export function handler(route: Endpoint) {
 			return Response.json(await dispatch(req, route), { headers });
 		} catch (error) {
 			return Response.json(
-				{ ok: false, error: error instanceof ApiError ? error.message : "internal" },
+				{
+					ok: false,
+					error: error instanceof ApiError ? error.message : "internal",
+					...(error instanceof ApiError && error.missing ? { missing: error.missing } : {}),
+				},
 				{ status: error instanceof ApiError ? error.status : 500, headers },
 			);
 		}
