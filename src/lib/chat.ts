@@ -4,7 +4,7 @@ import { clientBucket, reserveGeminiAttempt } from "./gemini-quota";
 import { knowledgeAnswer, questionPrompt } from "./knowledge-answer";
 import {
 	ApiError,
-	attachmentRecovery,
+	attachmentContext,
 	questionnaireTurn,
 	labelReview,
 	submitLead,
@@ -139,11 +139,20 @@ async function dispatch(req: Request, route: Endpoint) {
 				String(rows[0].lang),
 			);
 		}
+		const context = attachmentContext(sid, String(rows[0].lang));
+		const pendingAttachments = context?.instance
+			? db()
+					.prepare(
+						"SELECT id,name,size FROM files WHERE dialog=? AND field_instance=? AND created>? ORDER BY created,id",
+					)
+					.all(sid, context.instance, expiryCutoff())
+			: [];
 		return {
 			messages,
 			chips: JSON.parse(String(rows.at(-1)?.chips ?? "[]")),
 			...screen,
-			...attachmentRecovery(sid, String(rows[0].lang)),
+			...context?.recovery,
+			pendingAttachments,
 		};
 	}
 	const turn = writeTransaction(db(), () => {

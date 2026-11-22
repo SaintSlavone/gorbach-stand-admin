@@ -213,6 +213,7 @@ function view(state: State, catalog: Catalog, lang = "cs") {
 		item && product ? active(item, product).filter((f) => f.priority === "required") : [];
 	const total = required.length + 1;
 	const base = {
+		attachmentField: null as { id: string; type: string } | null,
 		attachmentAnswers: state.items.map((item) => ({
 			product: item.product,
 			fields: item.attachments ?? {},
@@ -377,7 +378,7 @@ function recoveryScreen(sid: string, state: State, catalog: Catalog, lang: strin
 		input: "text",
 	};
 }
-export function attachmentRecovery(sid: string, lang: string) {
+export function attachmentContext(sid: string, lang: string) {
 	const row = db()
 		.prepare(
 			"SELECT q.state,r.content FROM quote_sessions q JOIN revisions r ON r.id=q.version WHERE dialog=?",
@@ -388,7 +389,19 @@ export function attachmentRecovery(sid: string, lang: string) {
 	const catalog = JSON.parse(String(row.content))[
 		state.intake === "service" ? "services" : "products"
 	];
-	return recoveryScreen(sid, state, catalog, lang);
+	const expired = expiredAnswer(sid, state, catalog);
+	const recovery = recoveryScreen(sid, state, catalog, lang);
+	const item = expired?.item ?? state.items.at(-1);
+	const field = (recovery ?? view(state, catalog, lang)).attachmentField;
+	const instance =
+		field && item
+			? JSON.stringify([
+					state.items.indexOf(item),
+					field.id,
+					item.attachments?.[field.id] ?? [],
+				])
+			: null;
+	return { recovery, instance };
 }
 export function questionnaireTurn(
 	sid: string,

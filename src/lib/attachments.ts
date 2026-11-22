@@ -70,6 +70,13 @@ export function ensureAttachmentSchema(sql: DatabaseSync) {
 			CREATE INDEX files_by_dialog ON files(dialog);
 			CREATE INDEX files_by_age ON files(created);`);
 	}
+	if (
+		!sql
+			.prepare("PRAGMA table_info(files)")
+			.all()
+			.some((c) => c.name === "field_instance")
+	)
+		sql.exec("ALTER TABLE files ADD COLUMN field_instance TEXT");
 }
 
 export function writeTransaction<T>(sql: DatabaseSync, work: () => T) {

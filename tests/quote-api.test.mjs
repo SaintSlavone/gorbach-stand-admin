@@ -841,23 +841,27 @@ test("survey attachments advance, restore, and enforce ownership and expiry", as
 		.run(JSON.stringify(survey));
 	const sid = await start(),
 		other = await start();
-	const own = (await upload(sid, "%PDF-1.7")).data.file.id;
+	await upload(sid, "%PDF-1.7");
 	const foreign = (await upload(other, "%PDF-1.7")).data.file.id;
 	const msg = (body, status = 200) => api("msg", { sid, ...body }, status);
 	await msg({ chip: "quote" });
 	await msg({ chip: "photo" });
 	await msg({ files: [foreign] }, 400);
-	const next = await msg({ files: [own] });
+	const pending = (await upload(sid, "%PDF-1.7")).data.file;
+	const history = await api("history?sid=" + sid);
+	assert.deepEqual(history.pendingAttachments, [pending]);
+	const next = await msg({ files: [history.pendingAttachments[0].id] });
+	assert.deepEqual((await api("history?sid=" + sid)).pendingAttachments, []);
 	assert.equal(next.attachmentField.id, "detail");
 	assert.deepEqual(
 		(await api("history?sid=" + sid)).attachmentAnswers,
 		next.attachmentAnswers,
 	);
 	await msg({ text: "description" }, 400);
-	await msg({ text: "description", files: [own] });
+	await msg({ text: "description", files: [pending.id] });
 	await msg({ text: "Jana" });
 	await msg({ text: "jana@example.com" });
-	sql.prepare("UPDATE files SET created=0 WHERE id=?").run(own);
+	sql.prepare("UPDATE files SET created=0 WHERE id=?").run(pending.id);
 	assert.equal((await api("submit", { sid }, 400)).error, "incomplete");
 	const version = sql
 		.prepare("SELECT version FROM quote_sessions WHERE dialog=?")

@@ -8,7 +8,7 @@ import {
 	fileLimits,
 	writeTransaction,
 } from "./attachments";
-import { ApiError } from "./quote";
+import { ApiError, attachmentContext } from "./quote";
 
 const formats = {
 	jpg: "image/jpeg",
@@ -108,8 +108,8 @@ export function storeUpload(sid: string, name: string, bytes: Buffer) {
 	let createdPath: string | undefined;
 	try {
 		return writeTransaction(sql, () => {
-			if (!sql.prepare("SELECT 1 FROM dialogs WHERE id=?").get(sid))
-				throw new ApiError(404, "unknown_session");
+			const dialog = sql.prepare("SELECT lang FROM dialogs WHERE id=?").get(sid);
+			if (!dialog) throw new ApiError(404, "unknown_session");
 			const usage = sql
 				.prepare(
 					"SELECT count(*) AS count,coalesce(sum(size),0) AS total FROM files WHERE dialog=? AND created>?",
@@ -118,6 +118,9 @@ export function storeUpload(sid: string, name: string, bytes: Buffer) {
 			if (Number(usage.count) >= fileLimits.count) throw new ApiError(400, "count");
 			if (Number(usage.total) + bytes.length > fileLimits.total)
 				throw new ApiError(400, "total");
+			const instance = sql.prepare("SELECT 1 FROM leads WHERE dialog=?").get(sid)
+				? null
+				: (attachmentContext(sid, String(dialog.lang))?.instance ?? null);
 			const filename = attachmentPath(storageName);
 			const fd = openSync(filename, "wx", 0o600);
 			createdPath = filename;
@@ -128,9 +131,19 @@ export function storeUpload(sid: string, name: string, bytes: Buffer) {
 			}
 			sql
 				.prepare(
-					"INSERT INTO files(id,dialog,name,storage_name,mime,sha256,size,created) VALUES(?,?,?,?,?,?,?,?)",
+					"INSERT INTO files(id,dialog,name,storage_name,mime,sha256,size,created,field_instance) VALUES(?,?,?,?,?,?,?,?,?)",
 				)
-				.run(id, sid, name, storageName, formats[format], digest, bytes.length, Date.now());
+				.run(
+					id,
+					sid,
+					name,
+					storageName,
+					formats[format],
+					digest,
+					bytes.length,
+					Date.now(),
+					instance,
+				);
 			return { file: { id, name, size: bytes.length } };
 		});
 	} catch (error) {
