@@ -29,12 +29,21 @@ function redact(text: string) {
 		"[redacted]",
 	);
 }
-function redactQuestion(text: string) {
-	// Drop the rest of an identifying clause: names and addresses have no fixed length.
-	return redact(text).replace(
-		/(?<![\p{L}\p{N}])(?:my name is|my name['’]s|i am|i['’]m|call me|this is|jmenuj[ui] se|mé jméno je|jsem|ich hei(?:ße|sse)|mein name ist|ich bin|меня зовут|мо[её] имя|мене звати|моє ім['’]я|я|my address is|i live at|bydlím|moje adresa|meine adresse|ich wohne|мой адрес|моя адреса|name\s*:|jméno\s*:|имя\s*:|ім['’]я\s*:)(?![\p{L}\p{N}])[^!?\n]*/giu,
-		"[redacted]",
+function redactQuestion(text: string, lang: Language) {
+	const sentences = new Intl.Segmenter(lang, { granularity: "sentence" }).segment(
+		redact(text),
 	);
+	return Array.from(sentences, ({ segment }) =>
+		segment
+			.replace(
+				/(?<![\p{L}\p{N}])(?:my name is|my name['’]s|call me|jmenuj[ui] se|mé jméno je|ich hei(?:ße|sse)|mein name ist|меня зовут|мо[её] имя|мене звати|моє ім['’]я|my address is|i live at|bydlím na adrese|moje adresa|meine adresse|ich wohne (?:in|an|auf)|мой адрес|моя адреса|name\s*:|jméno\s*:|имя\s*:|ім['’]я\s*:)(?![\p{L}\p{N}])[^\n!?]*\S/giu,
+				"[redacted]",
+			)
+			.replace(
+				/(?<!\p{L})([Ii] am|[Ii]['’]m|[Tt]his is|[Jj]sem|[Ii]ch bin|[Яя])\s+\p{Lu}[\p{L}\p{M}'’-]*(?:[ \t]+\p{Lu}[\p{L}\p{M}'’-]*)*(?=\s*[,!.;:]|\s*$)/gu,
+				"[redacted]",
+			),
+	).join("");
 }
 export async function knowledgeAnswer(
 	question: string,
@@ -67,7 +76,9 @@ export async function knowledgeAnswer(
 			contents: [
 				{
 					role: "user",
-					parts: [{ text: JSON.stringify({ sections, question: redactQuestion(question) }) }],
+					parts: [
+						{ text: JSON.stringify({ sections, question: redactQuestion(question, lang) }) },
+					],
 				},
 			],
 			generationConfig: {

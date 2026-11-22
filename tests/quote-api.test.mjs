@@ -398,3 +398,56 @@ test("concurrent provider attempts respect rolling session and IP limits and the
 		delete process.env.GORBACH_DAY_LIMIT_MSGS;
 	}
 });
+test("self-introduction filtering preserves ordinary interests and subsequent questions", async () => {
+	sql.exec("DELETE FROM gemini_attempts");
+	provider = () => Response.json({}, { status: 503 });
+	for (const [lang, text, expected, privateText] of [
+		[
+			"en",
+			"I'm interested in outdoor blinds. Do you install them?",
+			"I'm interested in outdoor blinds. Do you install them?",
+		],
+		[
+			"en",
+			"I am looking for shades. Can you help?",
+			"I am looking for shades. Can you help?",
+		],
+		[
+			"en",
+			"My name is Jane Nováková. Do you install blinds?",
+			"Do you install blinds?",
+			"Jane Nováková",
+		],
+		[
+			"en",
+			"I'm Jane Nováková. Do you install blinds?",
+			"Do you install blinds?",
+			"Jane Nováková",
+		],
+		[
+			"en",
+			"My address is 24 Park Road. Do you install blinds?",
+			"Do you install blinds?",
+			"24 Park Road",
+		],
+		[
+			"cs",
+			"Jsem zvědavý na montáž. Montujete žaluzie?",
+			"Jsem zvědavý na montáž. Montujete žaluzie?",
+		],
+		["de", "Ich bin an Jalousien interessiert.", "Ich bin an Jalousien interessiert."],
+		["ru", "Я хочу заказать жалюзи.", "Я хочу заказать жалюзи."],
+		["uk", "Я хочу замовити жалюзі.", "Я хочу замовити жалюзі."],
+	]) {
+		addKnowledge("Fixture", lang);
+		const { sid } = await api("start", { lang, page: "/" });
+		const before = requests.length;
+		await api("msg", { sid, text });
+		assert.equal(requests.length, before + 1);
+		const outgoing = JSON.parse(requests.at(-1).contents[0].parts[0].text).question;
+		if (privateText) {
+			assert.ok(!outgoing.includes(privateText));
+			assert.ok(outgoing.includes(expected));
+		} else assert.equal(outgoing, expected);
+	}
+});
