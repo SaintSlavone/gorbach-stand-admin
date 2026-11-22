@@ -859,4 +859,24 @@ test("survey attachments advance, restore, and enforce ownership and expiry", as
 	await msg({ text: "jana@example.com" });
 	sql.prepare("UPDATE files SET created=0 WHERE id=?").run(own);
 	assert.equal((await api("submit", { sid }, 400)).error, "incomplete");
+	const version = sql
+		.prepare("SELECT version FROM quote_sessions WHERE dialog=?")
+		.get(sid).version;
+	const recovery = await api("history?sid=" + sid);
+	assert.equal(recovery.review, null);
+	assert.equal(recovery.attachmentRecovery.field, "photo");
+	const replacement = (await upload(sid, "%PDF-1.7")).data.file.id;
+	await msg({ files: [replacement] });
+	assert.equal((await api("history?sid=" + sid)).attachmentRecovery.field, "detail");
+	const review = await msg({ text: "description", files: [replacement] });
+	assert.ok(review.review);
+	assert.equal(review.review.name, "Jana");
+	assert.equal(
+		sql.prepare("SELECT version FROM quote_sessions WHERE dialog=?").get(sid).version,
+		version,
+	);
+	const lead = await api("submit", { sid });
+	sql.prepare("UPDATE files SET created=0 WHERE id=?").run(replacement);
+	assert.deepEqual(await api("submit", { sid }), lead);
+	assert.equal((await api("history?sid=" + sid)).lead_id, lead.lead_id);
 });

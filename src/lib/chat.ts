@@ -2,7 +2,14 @@ import { readUpload, storeUpload } from "./file-upload";
 import { writeTransaction, expiryCutoff } from "./attachments";
 import { clientBucket, reserveGeminiAttempt } from "./gemini-quota";
 import { knowledgeAnswer, questionPrompt } from "./knowledge-answer";
-import { ApiError, questionnaireTurn, labelReview, submitLead, readInput } from "./quote";
+import {
+	ApiError,
+	attachmentRecovery,
+	questionnaireTurn,
+	labelReview,
+	submitLead,
+	readInput,
+} from "./quote";
 import { randomBytes } from "node:crypto";
 import { db } from "./admin";
 
@@ -136,6 +143,7 @@ async function dispatch(req: Request, route: Endpoint) {
 			messages,
 			chips: JSON.parse(String(rows.at(-1)?.chips ?? "[]")),
 			...screen,
+			...attachmentRecovery(sid, String(rows[0].lang)),
 		};
 	}
 	const turn = writeTransaction(db(), () => {

@@ -349,6 +349,47 @@ function answer(state: State, catalog: Catalog, input: Input, sid: string) {
 	}
 	throw new ApiError(409, "already_reviewed");
 }
+function expiredAnswer(sid: string, state: State, catalog: Catalog) {
+	for (const item of state.items) {
+		const field = active(item, catalog[item.product]).find(
+			(f) =>
+				f.priority === "required" &&
+				["file", "text+file"].includes(f.type) &&
+				Object.hasOwn(item.answers, f.id) &&
+				item.answers[f.id] !== "neví" &&
+				!validFiles(sid, item.attachments?.[f.id]),
+		);
+		if (field) return { item, field };
+	}
+}
+function recoveryScreen(sid: string, state: State, catalog: Catalog, lang: string) {
+	const expired = expiredAnswer(sid, state, catalog);
+	if (!expired) return null;
+	const { item, field } = expired;
+	return {
+		...view(state, catalog, lang),
+		question: field.translations?.[lang]?.q ?? field.q,
+		attachmentField: { id: field.id, type: field.type },
+		attachmentRecovery: { product: item.product, field: field.id },
+		chips: [chip("skip", (prompts[lang as keyof typeof prompts] ?? prompts.cs).skip)],
+		review: null,
+		multi: false,
+		input: "text",
+	};
+}
+export function attachmentRecovery(sid: string, lang: string) {
+	const row = db()
+		.prepare(
+			"SELECT q.state,r.content FROM quote_sessions q JOIN revisions r ON r.id=q.version WHERE dialog=?",
+		)
+		.get(sid);
+	if (!row) return null;
+	const state: State = JSON.parse(String(row.state));
+	const catalog = JSON.parse(String(row.content))[
+		state.intake === "service" ? "services" : "products"
+	];
+	return recoveryScreen(sid, state, catalog, lang);
+}
 export function questionnaireTurn(
 	sid: string,
 	input: Input,
@@ -391,9 +432,30 @@ export function questionnaireTurn(
 	}
 	if (row) {
 		for (const item of state.items) Object.setPrototypeOf(item.answers, null);
-		answer(state, catalog, input, sid);
+		const expired = expiredAnswer(sid, state, catalog);
+		if (expired) {
+			const { item, field } = expired;
+			const replacement: Item = { product: item.product, answers: {} };
+			const temporary = { ...state, choosing: false, items: [replacement], skips: 0 };
+			answer(
+				temporary,
+				{
+					[item.product]: {
+						...catalog[item.product],
+						fields: [{ ...field, only_if: undefined }],
+					},
+				},
+				input,
+				sid,
+			);
+			item.answers[field.id] = replacement.answers[field.id];
+			item.attachments ??= {};
+			if (replacement.attachments?.[field.id])
+				item.attachments[field.id] = replacement.attachments[field.id];
+			else delete item.attachments[field.id];
+		} else answer(state, catalog, input, sid);
 	}
-	const screen = view(state, catalog, lang);
+	const screen = recoveryScreen(sid, state, catalog, lang) ?? view(state, catalog, lang);
 	sql
 		.prepare(
 			"INSERT INTO quote_sessions(dialog,version,state,screen) VALUES(?,?,?,?) ON CONFLICT(dialog) DO UPDATE SET state=excluded.state,screen=excluded.screen",

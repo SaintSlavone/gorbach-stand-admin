@@ -50,3 +50,12 @@ Behind a trusted reverse proxy, configure it to overwrite `X-Real-IP` with the a
 Upload with multipart POST /api/file first. Then confirm the returned file ID using POST /api/msg with {"sid":"…","files":["file-id"]} for a file field, or {"sid":"…","text":"description","files":["file-id"]} for text+file. Uploading alone does not advance the survey. The existing skip chip remains available.
 
 Survey responses expose attachmentField with id and type while a file question is active, and attachmentAnswers as product entries with a fields map from field ID to attachment IDs. History restores these values. Confirmed references are also stored in each review product's attachments map. Required references are checked again on submission. Expired or foreign references return invalid_attachment during confirmation, or incomplete during submission.
+
+An unsubmitted questionnaire with an expired required attachment exposes
+attachmentRecovery with product and field IDs in history and message responses.
+The response supplies the affected attachmentField and question, with review set
+to null. Upload a replacement and confirm it through the usual /api/msg files
+contract (include text again for text+file). Recovery proceeds through affected
+fields in questionnaire order, then restores the prior step or review. Other
+answers, contacts, and the pinned revision are retained. Submitted leads keep
+their original idempotent submission response.
