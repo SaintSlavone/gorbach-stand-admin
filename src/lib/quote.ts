@@ -96,6 +96,10 @@ const blank = (): State => ({
 	contact: "",
 });
 const chip = (id: string, label = id) => ({ id, label });
+function answerLabel(field: Field, lang: string, value: string) {
+	const labels = field.translations?.[lang]?.chips;
+	return labels && Object.hasOwn(labels, value) ? (labels[value] ?? value) : value;
+}
 function active(item: Item, product: Product) {
 	const targets = new Set<string>();
 	for (const f of product.fields) {
@@ -134,13 +138,21 @@ export function labelReview(
 		...summary,
 		products: summary.products.map((item) => {
 			const product = catalog[item.product];
+			const answered = product.fields.filter((field) =>
+				Object.hasOwn(item.answers, field.id),
+			);
 			return {
 				...item,
 				title: product.title?.[lang] ?? product.title?.cs ?? item.product,
 				questionLabels: Object.fromEntries(
-					product.fields
-						.filter((f) => Object.hasOwn(item.answers, f.id))
-						.map((f) => [f.id, f.translations?.[lang]?.q ?? f.q]),
+					answered.map((f) => [f.id, f.translations?.[lang]?.q ?? f.q]),
+				),
+				answerLabels: Object.fromEntries(
+					answered.map((field) => {
+						const answer = item.answers[field.id];
+						const label = (value: string) => answerLabel(field, lang, value);
+						return [field.id, Array.isArray(answer) ? answer.map(label) : label(answer)];
+					}),
 				),
 			};
 		}),
@@ -183,9 +195,7 @@ function view(state: State, catalog: Catalog, lang = "cs") {
 			question: fields.map((f) => f.translations?.[lang]?.q ?? f.q).join("\n"),
 			multi: !grouped && f.type === "multi",
 			chips: [
-				...(grouped ? [] : (f.chips ?? [])).map((v) =>
-					chip(v, f.translations?.[lang]?.chips?.[v] ?? v),
-				),
+				...(grouped ? [] : (f.chips ?? [])).map((v) => chip(v, answerLabel(f, lang, v))),
 				chip("skip", prompt.skip),
 			],
 			review: null,

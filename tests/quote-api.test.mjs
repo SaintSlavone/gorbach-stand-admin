@@ -153,6 +153,7 @@ test("review labels and answers use the pinned survey after a newer revision is 
 		title: "Testovací produkt",
 		answers: { stage: "Nový", options: ["B", "A"], note: "neví" },
 		questionLabels: { stage: "Stav?", options: "Možnosti?", note: "Poznámka?" },
+		answerLabels: { stage: "Nový", options: ["B", "A"], note: "neví" },
 	});
 	assert.deepEqual((await api("history?sid=" + sid)).review, review);
 });
@@ -216,8 +217,15 @@ test("English prompts and translated choices retain the displayed labels and sta
 	const summary = await msg({ text: "jane@example.com" });
 	assert.equal(summary.question, "Quote summary");
 	assert.equal(summary.review.products[0].questionLabels.options, "Which options?");
-	assert.deepEqual(summary.review.products[0].answers.options, ["B", "A"]);
 	const history = await api("history?sid=" + sid);
+	for (const { review } of [summary, history]) {
+		assert.deepEqual(review.products[0].answerLabels.options, [
+			"Second option",
+			"First option",
+		]);
+		assert.deepEqual(review.products[0].answers.options, ["B", "A"]);
+		assert.equal(review.products[0].answerLabels.stage, "Nový");
+	}
 	assert.deepEqual(
 		history.messages.filter((m) => m.role === "visitor").map((m) => m.text),
 		[
