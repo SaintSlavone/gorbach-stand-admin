@@ -57,10 +57,11 @@ export async function knowledgeAnswer(
 	if (!content || !key || !model || !/^[-\w.]+$/.test(model)) return fallback;
 	const signal = AbortSignal.timeout(15000);
 	try {
-		const sections = JSON.parse(content).map((s: { title: string; text: string }) => ({
-			title: redact(s.title),
-			text: redact(s.text),
-		})) as { title: string; text: string }[];
+		const source: { title: string; text: string; lang?: string }[] = JSON.parse(content);
+		// Legacy knowledge sections use the Czech source document's language.
+		const sections = source
+			.filter((section) => (section.lang ?? "cs").toLowerCase().split("-")[0] === lang)
+			.map((section) => ({ title: redact(section.title), text: redact(section.text) }));
 		if (!sections.some((s) => s.text.trim())) return fallback;
 		const request = {
 			systemInstruction: {

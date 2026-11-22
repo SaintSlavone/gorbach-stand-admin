@@ -11,12 +11,12 @@ import next from "next";
 const requests = [];
 let provider = () => Response.json({}, { status: 503 });
 const originalFetch = globalThis.fetch;
-function addKnowledge(text) {
+function addKnowledge(text, lang = "en") {
 	sql
 		.prepare(
 			"INSERT INTO revisions(kind,content,editor,provenance) VALUES('knowledge',?,'tester','staff')",
 		)
-		.run(JSON.stringify([{ id: "section", title: "Information", text }]));
+		.run(JSON.stringify([{ id: "section", title: "Information", lang, text }]));
 }
 let app, server, sql, origin, directory;
 before(async () => {
@@ -347,6 +347,7 @@ test("general questions use pinned knowledge and restore validated replies and f
 test("concurrent provider attempts respect rolling session and IP limits and the daily budget", async () => {
 	process.env.GORBACH_TRUST_PROXY = "true";
 	process.env.GORBACH_DAY_LIMIT_MSGS = "1500";
+	addKnowledge("Montujeme žaluzie.", "cs");
 	const sids = await Promise.all(Array.from({ length: 13 }, () => start()));
 	provider = () =>
 		Response.json({
@@ -450,4 +451,52 @@ test("self-introduction filtering preserves ordinary interests and subsequent qu
 			assert.ok(outgoing.includes(expected));
 		} else assert.equal(outgoing, expected);
 	}
+});
+test("knowledge answers must match the dialog language and a pinned source line", async () => {
+	sql.exec("DELETE FROM gemini_attempts");
+	const czech = "Montujeme venkovní žaluzie.",
+		english = "We install outdoor blinds.";
+	const sections = [{ id: "legacy", title: "Montáž", text: czech }];
+	const save = () =>
+		sql
+			.prepare(
+				"INSERT INTO revisions(kind,content,editor,provenance) VALUES('knowledge',?,'tester','staff')",
+			)
+			.run(JSON.stringify(sections));
+	const ask = async (lang) => {
+		const { sid } = await api("start", { page: "/", lang });
+		return (
+			await api("msg", {
+				sid,
+				text: lang === "cs" ? "Montujete žaluzie?" : "Do you install blinds?",
+			})
+		).messages[1].text;
+	};
+	let line = czech;
+	provider = () =>
+		Response.json({
+			candidates: [
+				{
+					finishReason: "STOP",
+					content: {
+						parts: [{ text: JSON.stringify({ unknown: false, reply: line, evidence: line }) }],
+					},
+				},
+			],
+		});
+	const fallback =
+		"I don’t have verified information on that. Our specialist can clarify.";
+	save();
+	const before = requests.length;
+	assert.equal(await ask("en"), fallback);
+	assert.equal(requests.length, before);
+	assert.equal(await ask("cs"), czech);
+	sections.push({ id: "installation", lang: "en", title: "Installation", text: english });
+	save();
+	const mixed = requests.length;
+	assert.equal(await ask("en"), fallback);
+	assert.ok(requests.length > mixed);
+	assert.ok(!JSON.stringify(requests.at(-1)).includes(czech));
+	line = english;
+	assert.equal(await ask("en"), english);
 });
