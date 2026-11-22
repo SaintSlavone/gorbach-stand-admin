@@ -293,14 +293,18 @@ test("general questions use pinned knowledge and restore validated replies and f
 		return result({ reply: old, unknown: false, evidence: old });
 	};
 	const reply = await msg({
-		text: "When do you open? Reach me at jane@example.org or +420 123 456 789.",
+		text:
+			"When do you open? My name is Jane Nováková. Reach me at jane@example.org or +420 123 456 789.",
 		attachments: ["private-file.pdf"],
 	});
 	assert.equal(reply.messages[1].text, old);
+	assert.ok(reply.messages[0].text.includes("Jane Nováková"));
 	const body = JSON.stringify(requests.at(-1));
+	assert.ok(body.includes("When do you open?"));
 	assert.ok(body.includes(old));
 	for (const omitted of [
 		"at noon",
+		"Jane Nováková",
 		"jane@example",
 		"123 456",
 		"private-file",
