@@ -11,6 +11,9 @@ export class ApiError extends Error {
 }
 const prompts = {
 	cs: {
+		service: "Jakou službu potřebujete?",
+		unavailable: "Příjem servisních požadavků momentálně není dostupný.",
+		serviceSummary: "Shrnutí požadavku",
 		product: "O jaký produkt máte zájem?",
 		name: "Jak se jmenujete?",
 		contact: "Jaký je váš telefon nebo e-mail?",
@@ -19,6 +22,9 @@ const prompts = {
 		add: "Přidat další produkt",
 	},
 	en: {
+		service: "Which service do you need?",
+		unavailable: "Service intake is currently unavailable.",
+		serviceSummary: "Service request summary",
 		product: "Which product are you interested in?",
 		name: "What is your name?",
 		contact: "What is your phone number or email address?",
@@ -27,6 +33,9 @@ const prompts = {
 		add: "Add another product",
 	},
 	de: {
+		service: "Welche Dienstleistung benötigen Sie?",
+		unavailable: "Serviceanfragen können derzeit nicht aufgenommen werden.",
+		serviceSummary: "Zusammenfassung der Serviceanfrage",
 		product: "Für welches Produkt interessieren Sie sich?",
 		name: "Wie heißen Sie?",
 		contact: "Wie lautet Ihre Telefonnummer oder E-Mail-Adresse?",
@@ -35,6 +44,9 @@ const prompts = {
 		add: "Weiteres Produkt hinzufügen",
 	},
 	ru: {
+		service: "Какая услуга вам нужна?",
+		unavailable: "Приём сервисных заявок сейчас недоступен.",
+		serviceSummary: "Сводка сервисной заявки",
 		product: "Какой продукт вас интересует?",
 		name: "Как вас зовут?",
 		contact: "Какой у вас номер телефона или адрес электронной почты?",
@@ -43,6 +55,9 @@ const prompts = {
 		add: "Добавить ещё один продукт",
 	},
 	uk: {
+		service: "Яка послуга вам потрібна?",
+		unavailable: "Приймання сервісних заявок зараз недоступне.",
+		serviceSummary: "Підсумок сервісної заявки",
 		product: "Який продукт вас цікавить?",
 		name: "Як вас звати?",
 		contact: "Який у вас номер телефону або адреса електронної пошти?",
@@ -65,7 +80,9 @@ type Product = { title?: Record<string, string>; fields: Field[] };
 type Catalog = Record<string, Product>;
 type Answer = string | string[];
 type Item = { product: string; answers: Record<string, Answer>; notes?: string };
+type Intake = "quote" | "service";
 type State = {
+	intake?: Intake;
 	items: Item[];
 	choosing: boolean;
 	skips: number;
@@ -88,7 +105,8 @@ export function readInput(body: Record<string, unknown>): Input {
 		throw new ApiError(400, kind === "text" ? "invalid_text" : "invalid_chip");
 	return { kind, values: values.map((v) => v.trim()) };
 }
-const blank = (): State => ({
+const blank = (intake: Intake = "quote"): State => ({
+	intake,
 	items: [],
 	choosing: true,
 	skips: 0,
@@ -124,6 +142,7 @@ const phone = (s: string) =>
 	/^\+?[\d ()-]+$/.test(s) && /^\d{7,15}$/.test(s.replace(/\D/g, ""));
 function review(state: State) {
 	return {
+		...(state.intake === "service" ? { serviceKind: state.items[0]?.product } : {}),
 		products: state.items,
 		name: state.name,
 		...(email(state.contact) ? { email: state.contact } : { phone: state.contact }),
@@ -180,7 +199,7 @@ function view(state: State, catalog: Catalog, lang = "cs") {
 	if (state.choosing || !item || !product)
 		return {
 			...base,
-			question: prompt.product,
+			question: state.intake === "service" ? prompt.service : prompt.product,
 			chips: Object.entries(catalog)
 				.filter(([, p]) => p.fields.length)
 				.map(([id, p]) => chip(id, p.title?.[lang] ?? p.title?.cs ?? id)),
@@ -212,8 +231,8 @@ function view(state: State, catalog: Catalog, lang = "cs") {
 		};
 	return {
 		...base,
-		question: prompt.summary,
-		chips: [chip("add_product", prompt.add)],
+		question: state.intake === "service" ? prompt.serviceSummary : prompt.summary,
+		chips: state.intake === "service" ? [] : [chip("add_product", prompt.add)],
 		review: review(state),
 	};
 }
@@ -276,16 +295,16 @@ function answer(state: State, catalog: Catalog, input: Input) {
 		state.contact = v;
 		return;
 	}
-	if (kind !== "chips" && v === "add_product") {
+	if (state.intake !== "service" && kind !== "chips" && v === "add_product") {
 		state.choosing = true;
 		return;
 	}
 	throw new ApiError(409, "already_reviewed");
 }
-export function quoteTurn(
+export function questionnaireTurn(
 	sid: string,
 	input: Input,
-	quoteRequested: boolean,
+	requested: Intake | null,
 	lang: string,
 ) {
 	const sql = db();
@@ -294,7 +313,7 @@ export function quoteTurn(
 			"SELECT q.state,q.version,r.content FROM quote_sessions q JOIN revisions r ON r.id=q.version WHERE q.dialog=?",
 		)
 		.get(sid);
-	if (!row && !quoteRequested) return null;
+	if (!row && !requested) return null;
 	if (sql.prepare("SELECT 1 FROM leads WHERE dialog=?").get(sid))
 		throw new ApiError(409, "submitted");
 	const rev =
@@ -304,11 +323,24 @@ export function quoteTurn(
 				"SELECT id AS version,content FROM revisions WHERE kind='survey' ORDER BY id DESC LIMIT 1",
 			)
 			.get();
-	if (!rev) throw new ApiError(409, "survey_unavailable");
-	const catalog: Catalog = JSON.parse(String(rev.content)).products;
-	if (!Object.values(catalog).some((p) => p.fields.length))
+	const state: State = row ? JSON.parse(String(row.state)) : blank(requested ?? "quote");
+	const service = state.intake === "service";
+	const catalog: Catalog = rev
+		? JSON.parse(String(rev.content))[service ? "services" : "products"]
+		: {};
+	if (!rev || !Object.values(catalog).some((p) => p.fields.length)) {
+		if (service)
+			return {
+				question: (prompts[lang as keyof typeof prompts] ?? prompts.cs).unavailable,
+				chips: [],
+				review: null,
+				progress: null,
+				input: "text",
+				multi: false,
+				pending: false,
+			};
 		throw new ApiError(409, "survey_unavailable");
-	const state: State = row ? JSON.parse(String(row.state)) : blank();
+	}
 	if (row) {
 		for (const item of state.items) Object.setPrototypeOf(item.answers, null);
 		answer(state, catalog, input);
@@ -320,8 +352,8 @@ export function quoteTurn(
 		)
 		.run(sid, rev.version, JSON.stringify(state), JSON.stringify(screen));
 	sql
-		.prepare("UPDATE dialogs SET product=?,start_chip='quote' WHERE id=?")
-		.run(state.items[0]?.product ?? "", sid);
+		.prepare("UPDATE dialogs SET product=?,start_chip=? WHERE id=?")
+		.run(state.items[0]?.product ?? "", state.intake ?? "quote", sid);
 	return screen.review
 		? { ...screen, review: labelReview(screen.review, catalog, lang) }
 		: screen;
@@ -336,7 +368,9 @@ export function submitLead(sid: string) {
 		)
 		.get(sid);
 	const state: State = row ? JSON.parse(String(row.state)) : blank(),
-		catalog: Catalog = row ? JSON.parse(String(row.content)).products : {};
+		catalog: Catalog = row
+			? JSON.parse(String(row.content))[state.intake === "service" ? "services" : "products"]
+			: {};
 	const missing: string[] = [];
 	if (state.choosing || !state.items.length) missing.push("product");
 	for (const item of state.items) {
@@ -368,15 +402,19 @@ export function submitLead(sid: string) {
 	const contact = state.name + " · " + state.contact;
 	sql
 		.prepare(
-			"INSERT INTO leads(id,dialog,kind,product,created,contact,summary,fields) VALUES(?,?,'quote',?,?,?,?,?)",
+			"INSERT INTO leads(id,dialog,kind,product,created,contact,summary,fields) VALUES(?,?,?,?,?,?,?,?)",
 		)
 		.run(
 			id,
 			sid,
+			state.intake === "service" ? state.items[0].product : "quote",
 			state.items[0].product,
 			now.toISOString(),
 			contact,
-			"Poptávka: " + titles.join(", ") + " · " + contact,
+			(state.intake === "service" ? "Servisní požadavek: " : "Poptávka: ") +
+				titles.join(", ") +
+				" · " +
+				contact,
 			JSON.stringify(summary),
 		);
 	return { lead_id: id };

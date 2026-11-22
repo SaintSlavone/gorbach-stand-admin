@@ -1,6 +1,6 @@
 import { clientBucket, reserveGeminiAttempt } from "./gemini-quota";
 import { knowledgeAnswer, questionPrompt } from "./knowledge-answer";
-import { ApiError, quoteTurn, labelReview, submitLead, readInput } from "./quote";
+import { ApiError, questionnaireTurn, labelReview, submitLead, readInput } from "./quote";
 import { randomBytes } from "node:crypto";
 import { db } from "./admin";
 
@@ -180,7 +180,9 @@ async function dispatch(req: Request, route: Endpoint) {
 				.get(rows[0].version)!;
 			screen.review = labelReview(
 				screen.review,
-				JSON.parse(String(pinned.content)).products,
+				JSON.parse(String(pinned.content))[
+					screen.review.serviceKind ? "services" : "products"
+				],
 				String(rows[0].lang),
 			);
 		}
@@ -208,7 +210,12 @@ async function dispatch(req: Request, route: Endpoint) {
 					/(?:(?<![\p{L}\p{M}\p{N}_])(?:price|cost|quote|preis|cena|cenu|kolik stojí)(?![\p{L}\p{M}\p{N}_])|сколько стоит|ціна|вартість)/iu.test(
 						value,
 					)));
-		const survey = quoteTurn(sid, input, quoteRequested, lang);
+		const requested = quoteRequested
+			? "quote"
+			: input.kind === "chip" && value === "service"
+				? "service"
+				: null;
+		const survey = questionnaireTurn(sid, input, requested, lang);
 		if (
 			!survey &&
 			input.kind !== "text" &&

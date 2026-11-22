@@ -527,3 +527,85 @@ test("knowledge validation accepts only supported explicit language codes or an 
 		assert.deepEqual(validate({ ...section, lang }), [{ ...section, lang }]);
 	assert.deepEqual(validate(section), [section]);
 });
+test("service intake restores its pinned questionnaire and submits one categorized admin lead", async () => {
+	const survey = JSON.parse(
+		readFileSync(new URL("./fixtures/quote-survey.json", import.meta.url), "utf8"),
+	);
+	const save = () =>
+		sql
+			.prepare(
+				"INSERT INTO revisions(kind,content,editor,provenance) VALUES('survey',?,'tester','staff')",
+			)
+			.run(JSON.stringify(survey));
+	save();
+	const prior = requests.length;
+	const { sid } = await api("start", { lang: "en", page: "/" });
+	const msg = (body, status = 200) => api("msg", { sid, ...body }, status);
+	const history = () => api("history?sid=" + sid);
+	const unavailable = await msg({ chip: "service" });
+	assert.equal(
+		unavailable.messages.at(-1).text,
+		"Service intake is currently unavailable.",
+	);
+	assert.deepEqual(unavailable.chips, []);
+	assert.equal((await history()).messages.at(-1).text, unavailable.question);
+	survey.services = {
+		cleaning: { title: { en: "Cleaning" }, fields: survey.products.sample.fields },
+		service: { fields: [] },
+	};
+	save();
+	const selection = await msg({ chip: "service" });
+	assert.deepEqual(selection.chips, [{ id: "cleaning", label: "Cleaning" }]);
+	assert.deepEqual((await history()).chips, selection.chips);
+	await msg({ chip: "service" }, 400);
+	survey.services = {};
+	save();
+	await msg({ chip: "cleaning" });
+	const multi = await msg({ chip: "Nový" });
+	assert.equal(multi.multi, true);
+	const restored = await history();
+	assert.equal(restored.question, multi.question);
+	assert.deepEqual(restored.chips, multi.chips);
+	await msg({ chips: ["B", "A"] });
+	await msg({ chip: "skip" });
+	await msg({ text: "Jana" });
+	assert.equal((await api("submit", { sid }, 400)).error, "incomplete");
+	const review = await msg({ text: "jana@example.com" });
+	assert.equal(review.review.products[0].title, "Cleaning");
+	assert.deepEqual(review.review.products[0].answers.options, ["B", "A"]);
+	assert.deepEqual(review.chips, []);
+	assert.deepEqual((await history()).review, review.review);
+	const [lead, repeat] = await Promise.all([
+		api("submit", { sid }),
+		api("submit", { sid }),
+	]);
+	assert.ok(lead.lead_id);
+	assert.deepEqual(lead, repeat);
+	assert.equal((await history()).lead_id, lead.lead_id);
+	assert.deepEqual(
+		sql
+			.prepare("SELECT kind FROM leads WHERE dialog=?")
+			.all(sid)
+			.map((r) => r.kind),
+		["cleaning"],
+	);
+	const { randomUUID, createHash } = await import("node:crypto");
+	const token = randomUUID();
+	sql.prepare("INSERT INTO staff VALUES(?,?,?)").run("filter-test", "unused", "unused");
+	sql
+		.prepare("INSERT INTO sessions VALUES(?,?,?)")
+		.run(
+			createHash("sha256").update(token).digest("hex"),
+			"filter-test",
+			Date.now() + 60000,
+		);
+	const admin = async (kind) =>
+		(
+			await fetch(origin + "/admin?section=leads&kind=" + kind, {
+				headers: { cookie: "gz_admin=" + token },
+			})
+		).text();
+	assert.ok((await admin("cleaning")).includes(lead.lead_id));
+	assert.ok(!(await admin("quote")).includes(lead.lead_id));
+	assert.equal(requests.length, prior);
+});
