@@ -1,3 +1,4 @@
+import { ensureRevisionSchema } from "./revision-schema";
 import { DatabaseSync } from "node:sqlite";
 import { mkdirSync } from "node:fs";
 import path from "node:path";
@@ -16,10 +17,10 @@ export function db() {
  CREATE TABLE IF NOT EXISTS dialogs(id TEXT PRIMARY KEY,lang TEXT NOT NULL,page TEXT NOT NULL,created TEXT NOT NULL,product TEXT DEFAULT '',start_chip TEXT DEFAULT '',exit_field TEXT DEFAULT '',knowledge_version INTEGER);
  CREATE TABLE IF NOT EXISTS messages(id INTEGER PRIMARY KEY,dialog TEXT REFERENCES dialogs(id) ON DELETE CASCADE,role TEXT NOT NULL,body TEXT NOT NULL,unknown INTEGER DEFAULT 0,cost REAL DEFAULT 0);
  CREATE TABLE IF NOT EXISTS leads(id TEXT PRIMARY KEY,dialog TEXT UNIQUE NOT NULL REFERENCES dialogs(id) ON DELETE CASCADE,kind TEXT NOT NULL,product TEXT NOT NULL,status TEXT NOT NULL DEFAULT 'Nová',created TEXT NOT NULL,contact TEXT NOT NULL,summary TEXT NOT NULL,fields TEXT DEFAULT '{}',delivery TEXT DEFAULT '');
- CREATE TABLE IF NOT EXISTS files(id TEXT PRIMARY KEY,dialog TEXT NOT NULL REFERENCES dialogs(id) ON DELETE CASCADE,name TEXT NOT NULL,bytes BLOB NOT NULL);
- CREATE TABLE IF NOT EXISTS revisions(id INTEGER PRIMARY KEY,kind TEXT NOT NULL,content TEXT NOT NULL,editor TEXT NOT NULL,created TEXT DEFAULT CURRENT_TIMESTAMP);`);
+ CREATE TABLE IF NOT EXISTS files(id TEXT PRIMARY KEY,dialog TEXT NOT NULL REFERENCES dialogs(id) ON DELETE CASCADE,name TEXT NOT NULL,bytes BLOB NOT NULL);`);
 	database.exec("PRAGMA busy_timeout=5000; BEGIN IMMEDIATE");
 	try {
+		ensureRevisionSchema(database);
 		if (
 			!database
 				.prepare("PRAGMA table_info(dialogs)")

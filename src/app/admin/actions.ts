@@ -33,7 +33,7 @@ export async function submit(form: FormData) {
 		}
 		const result = db()
 			.prepare(
-				"INSERT INTO revisions(kind,content,editor) SELECT ?,?,? WHERE COALESCE((SELECT MAX(id) FROM revisions WHERE kind=?),0)=?",
+				"INSERT INTO revisions(kind,content,editor,provenance) SELECT ?,?,?,'staff' WHERE COALESCE((SELECT MAX(id) FROM revisions WHERE kind=?),0)=?",
 			)
 			.run(action, JSON.stringify(data), user, action, Number(value("version")));
 		if (!result.changes) redirect(url + "&error=conflict");
