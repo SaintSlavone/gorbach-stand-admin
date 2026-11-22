@@ -269,6 +269,8 @@ export function submitLead(sid: string) {
 	if (!state.name.trim()) missing.push("name");
 	if (!(email(state.contact) || phone(state.contact))) missing.push("contact");
 	if (missing.length) throw new ApiError(400, "incomplete", missing);
+	const summary = view(state, catalog).review;
+	if (!summary) throw new ApiError(400, "incomplete", ["review"]);
 	const now = new Date();
 	const date = new Intl.DateTimeFormat("sv-SE", { timeZone: "Europe/Prague" })
 		.format(now)
@@ -292,7 +294,7 @@ export function submitLead(sid: string) {
 			now.toISOString(),
 			contact,
 			"Poptávka: " + titles.join(", ") + " · " + contact,
-			JSON.stringify(review(state)),
+			JSON.stringify(summary),
 		);
 	return { lead_id: id };
 }
