@@ -1,6 +1,14 @@
 import { expiryCutoff } from "./attachments";
-import { consultationChips } from "./chat-copy";
+import { consultationChips, language, type Language } from "./chat-copy";
 import { db } from "./admin";
+import {
+	answerMarkerLabels,
+	surveyOption,
+	surveyQuestion,
+	surveyTitle,
+	type FieldCopy,
+	type Intake,
+} from "./survey-copy";
 
 export class ApiError extends Error {
 	constructor(
@@ -68,10 +76,7 @@ export const prompts = {
 		add: "Додати ще один продукт",
 	},
 };
-type Field = {
-	translations?: Record<string, { q?: string; chips?: Record<string, string> }>;
-	id: string;
-	q: string;
+type Field = FieldCopy & {
 	priority: "required" | "recommended" | "optional";
 	type: string;
 	chips?: string[];
@@ -86,8 +91,8 @@ type Item = {
 	answers: Record<string, Answer>;
 	attachments?: Record<string, string[]>;
 	notes?: string;
+	answerMarkers?: Record<string, "skipped" | "notes">;
 };
-type Intake = "quote" | "service";
 type State = {
 	intake?: Intake;
 	items: Item[];
@@ -135,10 +140,6 @@ const blank = (intake: Intake = "quote"): State => ({
 	contact: "",
 });
 const chip = (id: string, label = id) => ({ id, label });
-function answerLabel(field: Field, lang: string, value: string) {
-	const labels = field.translations?.[lang]?.chips;
-	return labels && Object.hasOwn(labels, value) ? (labels[value] ?? value) : value;
-}
 function active(item: Item, product: Product) {
 	const targets = new Set<string>();
 	for (const f of product.fields) {
@@ -176,33 +177,62 @@ function selectedProduct(state: State) {
 function review(state: State) {
 	return {
 		...(state.intake === "service" ? { serviceKind: state.items[0]?.product } : {}),
-		products: state.items,
+		products: state.items.map(({ answerMarkers, ...item }) => item),
 		name: state.name,
 		...contactDetails(state.contact),
 	};
 }
-export function labelReview(
-	summary: ReturnType<typeof review>,
-	catalog: Catalog,
-	lang: string,
+function reviewAnswerLabel(
+	intake: Intake,
+	item: Item,
+	field: Field,
+	lang: Language,
+	value: string,
 ) {
+	const explicit = surveyOption(intake, item.product, field, lang, value);
+	if (explicit !== undefined) return explicit;
+	const labels = answerMarkerLabels[lang];
+	const marker =
+		item.answerMarkers && Object.hasOwn(item.answerMarkers, field.id)
+			? item.answerMarkers[field.id]
+			: undefined;
+	if (marker) return labels[marker];
+	if (field.type === "file" && value === "attachment") return labels.attachment;
+	// A historical free-text answer can literally contain a marker. Translate only
+	// values the visitor could not have entered as an ordinary answer in the field.
+	const restricted =
+		["number", "choice", "multi", "file"].includes(field.type) &&
+		!field.chips?.includes(value);
+	if (
+		value === "neví" &&
+		(restricted || (field.type === "text+file" && !item.attachments?.[field.id]?.length))
+	)
+		return labels.skipped;
+	if (value === "viz poznámka" && restricted && item.notes) return labels.notes;
+	return value;
+}
+
+function labelReview(state: State, catalog: Catalog, lang: Language) {
+	const summary = review(state);
+	const intake = state.intake ?? "quote";
 	return {
 		...summary,
-		products: summary.products.map((item) => {
+		products: summary.products.map((item, index) => {
 			const product = catalog[item.product];
 			const answered = product.fields.filter((field) =>
 				Object.hasOwn(item.answers, field.id),
 			);
 			return {
 				...item,
-				title: product.title?.[lang] ?? product.title?.cs ?? item.product,
+				title: surveyTitle(intake, item.product, product.title, lang),
 				questionLabels: Object.fromEntries(
-					answered.map((f) => [f.id, f.translations?.[lang]?.q ?? f.q]),
+					answered.map((f) => [f.id, surveyQuestion(intake, item.product, f, lang)]),
 				),
 				answerLabels: Object.fromEntries(
 					answered.map((field) => {
 						const answer = item.answers[field.id];
-						const label = (value: string) => answerLabel(field, lang, value);
+						const label = (value: string) =>
+							reviewAnswerLabel(intake, state.items[index], field, lang, value);
 						return [field.id, Array.isArray(answer) ? answer.map(label) : label(answer)];
 					}),
 				),
@@ -210,8 +240,9 @@ export function labelReview(
 		}),
 	};
 }
-function view(state: State, catalog: Catalog, lang = "cs") {
-	const prompt = prompts[lang as keyof typeof prompts] ?? prompts.cs;
+function view(state: State, catalog: Catalog, lang: Language = "cs") {
+	const prompt = prompts[lang];
+	const intake = state.intake ?? "quote";
 	const item = state.items.at(-1),
 		product = item && catalog[item.product];
 	const required =
@@ -240,7 +271,7 @@ function view(state: State, catalog: Catalog, lang = "cs") {
 			question: state.intake === "service" ? prompt.service : prompt.product,
 			chips: Object.entries(catalog)
 				.filter(([, p]) => p.fields.length)
-				.map(([id, p]) => chip(id, p.title?.[lang] ?? p.title?.cs ?? id)),
+				.map(([id, p]) => chip(id, surveyTitle(intake, id, p.title, lang))),
 			review: null,
 		};
 	const fields = pending(item, product);
@@ -249,13 +280,17 @@ function view(state: State, catalog: Catalog, lang = "cs") {
 			grouped = fields.length > 1;
 		return {
 			...base,
-			question: fields.map((f) => f.translations?.[lang]?.q ?? f.q).join("\n"),
+			question: fields.map((f) => surveyQuestion(intake, item.product, f, lang)).join("\n"),
 			multi: !grouped && f.type === "multi",
 			attachmentField: ["file", "text+file"].includes(f.type)
 				? { id: f.id, type: f.type }
 				: null,
 			chips: [
-				...(grouped ? [] : (f.chips ?? [])).map((v) => chip(v, answerLabel(f, lang, v))),
+				...(grouped
+					? []
+					: (f.chips ?? []).map((v) =>
+							chip(v, surveyOption(intake, item.product, f, lang, v) ?? v),
+						)),
 				chip("skip", prompt.skip),
 			],
 			review: null,
@@ -277,6 +312,11 @@ function view(state: State, catalog: Catalog, lang = "cs") {
 		review: review(state),
 	};
 }
+function markAnswer(item: Item, id: string, marker: "skipped" | "notes") {
+	item.answers[id] = marker === "skipped" ? "neví" : "viz poznámka";
+	item.answerMarkers = { ...item.answerMarkers, [id]: marker };
+}
+
 function answer(state: State, catalog: Catalog, input: Input, sid: string) {
 	const { values, kind } = input,
 		v = values[0];
@@ -298,10 +338,10 @@ function answer(state: State, catalog: Catalog, input: Input, sid: string) {
 				["skip", "nevím", "přeskočit", "nechci"].includes(v.toLowerCase());
 		if (skip) {
 			state.skips++;
-			for (const field of fields) item.answers[field.id] = "neví";
+			for (const field of fields) markAnswer(item, field.id, "skipped");
 			if (state.skips >= 2 || v.toLowerCase() === "nechci")
 				for (const field of active(item, catalog[item.product]))
-					if (!Object.hasOwn(item.answers, field.id)) item.answers[field.id] = "neví";
+					if (!Object.hasOwn(item.answers, field.id)) markAnswer(item, field.id, "skipped");
 			return;
 		}
 		if (["file", "text+file"].includes(f.type)) {
@@ -321,7 +361,7 @@ function answer(state: State, catalog: Catalog, input: Input, sid: string) {
 		if (fields.length > 1) {
 			if (kind !== "text") throw new ApiError(400, "invalid_answer");
 			item.notes = v;
-			for (const field of fields) item.answers[field.id] = "viz poznámka";
+			for (const field of fields) markAnswer(item, field.id, "notes");
 		} else {
 			if (
 				(kind === "chips" && f.type !== "multi") ||
@@ -367,36 +407,47 @@ function expiredAnswer(sid: string, state: State, catalog: Catalog) {
 		if (field) return { item, field };
 	}
 }
-function recoveryScreen(sid: string, state: State, catalog: Catalog, lang: string) {
-	const expired = expiredAnswer(sid, state, catalog);
-	if (!expired) return null;
-	const { item, field } = expired;
+function recoveryScreen(
+	state: State,
+	catalog: Catalog,
+	lang: Language,
+	{ item, field }: NonNullable<ReturnType<typeof expiredAnswer>>,
+) {
 	return {
 		...view(state, catalog, lang),
-		question: field.translations?.[lang]?.q ?? field.q,
+		question: surveyQuestion(state.intake ?? "quote", item.product, field, lang),
 		attachmentField: { id: field.id, type: field.type },
 		attachmentRecovery: { product: item.product, field: field.id },
-		chips: [chip("skip", (prompts[lang as keyof typeof prompts] ?? prompts.cs).skip)],
+		chips: [chip("skip", prompts[lang].skip)],
 		review: null,
 		multi: false,
 		input: "text",
 	};
 }
-export function attachmentContext(sid: string, lang: string) {
-	const row = db()
-		.prepare(
-			"SELECT q.state,r.content FROM quote_sessions q JOIN revisions r ON r.id=q.version WHERE dialog=?",
-		)
-		.get(sid);
-	if (!row) return null;
-	const state: State = JSON.parse(String(row.state));
-	const catalog = JSON.parse(String(row.content))[
-		state.intake === "service" ? "services" : "products"
-	];
+function surveyCatalog(state: State, content: string): Catalog {
+	return JSON.parse(content)[state.intake === "service" ? "services" : "products"];
+}
+
+function surveyStep(sid: string, state: State, catalog: Catalog, lang: Language) {
 	const expired = expiredAnswer(sid, state, catalog);
-	const recovery = recoveryScreen(sid, state, catalog, lang);
-	const item = expired?.item ?? state.items.at(-1);
-	const field = (recovery ?? view(state, catalog, lang)).attachmentField;
+	const recovery = expired ? recoveryScreen(state, catalog, lang, expired) : null;
+	return {
+		screen: recovery ?? view(state, catalog, lang),
+		recovery,
+		item: expired?.item ?? state.items.at(-1),
+	};
+}
+
+export function restoreQuestionnaire(
+	sid: string,
+	lang: Language,
+	stateJson: string,
+	content: string,
+) {
+	const state: State = JSON.parse(stateJson);
+	const catalog = surveyCatalog(state, content);
+	const { screen, recovery, item } = surveyStep(sid, state, catalog, lang);
+	const field = screen.attachmentField;
 	const instance =
 		field && item
 			? JSON.stringify([
@@ -405,13 +456,30 @@ export function attachmentContext(sid: string, lang: string) {
 					item.attachments?.[field.id] ?? [],
 				])
 			: null;
-	return { recovery, instance };
+	return {
+		screen: screen.review
+			? { ...screen, review: labelReview(state, catalog, lang) }
+			: screen,
+		recovery,
+		instance,
+	};
+}
+
+export function attachmentContext(sid: string, lang: string) {
+	const row = db()
+		.prepare(
+			"SELECT q.state,r.content FROM quote_sessions q JOIN revisions r ON r.id=q.version WHERE dialog=?",
+		)
+		.get(sid);
+	return row
+		? restoreQuestionnaire(sid, language(lang), String(row.state), String(row.content))
+		: null;
 }
 export function questionnaireTurn(
 	sid: string,
 	input: Input,
 	requested: Intake | null,
-	lang: keyof typeof prompts,
+	lang: Language,
 ) {
 	const sql = db();
 	const row = sql
@@ -431,9 +499,7 @@ export function questionnaireTurn(
 			.get();
 	const state: State = row ? JSON.parse(String(row.state)) : blank(requested ?? "quote");
 	const service = state.intake === "service";
-	const catalog: Catalog = rev
-		? JSON.parse(String(rev.content))[service ? "services" : "products"]
-		: {};
+	const catalog = rev ? surveyCatalog(state, String(rev.content)) : {};
 	if (!rev || !Object.values(catalog).some((p) => p.fields.length)) {
 		if (service)
 			return {
@@ -466,13 +532,18 @@ export function questionnaireTurn(
 				sid,
 			);
 			item.answers[field.id] = replacement.answers[field.id];
+			if (replacement.answerMarkers?.[field.id])
+				item.answerMarkers = {
+					...item.answerMarkers,
+					[field.id]: replacement.answerMarkers[field.id],
+				};
 			item.attachments ??= {};
 			if (replacement.attachments?.[field.id])
 				item.attachments[field.id] = replacement.attachments[field.id];
 			else delete item.attachments[field.id];
 		} else answer(state, catalog, input, sid);
 	}
-	const screen = recoveryScreen(sid, state, catalog, lang) ?? view(state, catalog, lang);
+	const { screen } = surveyStep(sid, state, catalog, lang);
 	sql
 		.prepare(
 			"INSERT INTO quote_sessions(dialog,version,state,screen) VALUES(?,?,?,?) ON CONFLICT(dialog) DO UPDATE SET state=excluded.state,screen=excluded.screen",
@@ -481,9 +552,7 @@ export function questionnaireTurn(
 	sql
 		.prepare("UPDATE dialogs SET product=?,start_chip=? WHERE id=?")
 		.run(selectedProduct(state), state.intake ?? "quote", sid);
-	return screen.review
-		? { ...screen, review: labelReview(screen.review, catalog, lang) }
-		: screen;
+	return screen.review ? { ...screen, review: labelReview(state, catalog, lang) } : screen;
 }
 export function submitLead(sid: string) {
 	const sql = db(),
@@ -495,9 +564,7 @@ export function submitLead(sid: string) {
 		)
 		.get(sid);
 	const state: State = row ? JSON.parse(String(row.state)) : blank(),
-		catalog: Catalog = row
-			? JSON.parse(String(row.content))[state.intake === "service" ? "services" : "products"]
-			: {};
+		catalog = row ? surveyCatalog(state, String(row.content)) : {};
 	const missing: string[] = [];
 	if (state.choosing || !state.items.length) missing.push("product");
 	for (const item of state.items) {

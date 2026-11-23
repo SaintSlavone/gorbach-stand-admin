@@ -24,7 +24,7 @@ import {
 	ApiError,
 	attachmentContext,
 	questionnaireTurn,
-	labelReview,
+	restoreQuestionnaire,
 	submitLead,
 	readInput,
 } from "./quote";
@@ -133,6 +133,92 @@ function saveExchange<Screen extends { chips: { id: string; label: string }[] }>
 	}
 	return { ...screen, lang, messages };
 }
+
+function conversationHistory(sid: string) {
+	const sql = db();
+	sql.exec("BEGIN DEFERRED");
+	try {
+		const dialog = sql
+			.prepare(
+				`SELECT q.screen,q.state AS survey_state,r.content AS survey_content,d.lang,l.id AS lead_id,
+			 h.question AS handoff_question,h.name AS handoff_name,h.contact AS handoff_contact
+			 FROM dialogs d LEFT JOIN leads l ON l.dialog=d.id LEFT JOIN quote_sessions q ON q.dialog=d.id
+			 LEFT JOIN revisions r ON r.id=q.version LEFT JOIN handoff_sessions h ON h.dialog=d.id
+			 WHERE d.id=?`,
+			)
+			.get(sid);
+		if (!dialog) throw new ApiError(404, "unknown_session");
+		const lang = language(dialog.lang);
+		const rows = sql
+			.prepare("SELECT role,body AS text,chips FROM messages WHERE dialog=? ORDER BY id")
+			.all(sid);
+		const messages = rows.map(({ role, text }) => ({ role, text }));
+		if (dialog.lead_id)
+			return {
+				lang,
+				messages,
+				lead_id: dialog.lead_id,
+				chips: [],
+				review: null,
+				progress: null,
+				multi: false,
+				pending: false,
+			};
+		const {
+			handoff_question,
+			handoff_name,
+			handoff_contact,
+			survey_state,
+			survey_content,
+		} = dialog;
+		if (typeof handoff_question === "string")
+			return {
+				lang,
+				messages,
+				...handoffScreen(
+					{
+						question: handoff_question,
+						name: String(handoff_name),
+						contact: String(handoff_contact),
+					},
+					lang,
+				),
+			};
+		const context =
+			typeof survey_state === "string" && typeof survey_content === "string"
+				? restoreQuestionnaire(sid, lang, survey_state, survey_content)
+				: null;
+		const last = messages.at(-1);
+		if (context && last?.role === "bot") {
+			const saved = JSON.parse(String(dialog.screen ?? "{}"));
+			const recovery = context.recovery?.attachmentRecovery;
+			if (
+				last.text === saved.question &&
+				saved.attachmentRecovery?.product === recovery?.product &&
+				saved.attachmentRecovery?.field === recovery?.field
+			)
+				last.text = context.screen.question;
+		}
+		const pendingAttachments = context?.instance
+			? sql
+					.prepare(
+						"SELECT id,name,size FROM files WHERE dialog=? AND field_instance=? AND created>? ORDER BY created,id",
+					)
+					.all(sid, context.instance, expiryCutoff())
+			: [];
+		return {
+			...generalScreen,
+			lang,
+			messages,
+			chips: context?.screen.chips ?? JSON.parse(String(rows.at(-1)?.chips ?? "[]")),
+			...context?.screen,
+			pendingAttachments,
+		};
+	} finally {
+		sql.exec("ROLLBACK");
+	}
+}
+
 type Endpoint = "status" | "start" | "msg" | "history" | "reset" | "submit" | "file";
 async function dispatch(req: Request, route: Endpoint) {
 	const url = new URL(req.url);
@@ -175,77 +261,7 @@ async function dispatch(req: Request, route: Endpoint) {
 	}
 	const sid = route === "history" ? url.searchParams.get("sid") : body.sid;
 	validateSid(sid);
-	if (route === "history") {
-		const rows = db()
-			.prepare(
-				`SELECT m.role,m.body AS text,m.chips,q.screen,q.version,d.lang,l.id AS lead_id,
-				 h.question AS handoff_question,h.name AS handoff_name,h.contact AS handoff_contact
-				 FROM dialogs d LEFT JOIN leads l ON l.dialog=d.id LEFT JOIN quote_sessions q ON q.dialog=d.id
-				 LEFT JOIN handoff_sessions h ON h.dialog=d.id LEFT JOIN messages m ON m.dialog=d.id
-				 WHERE d.id=? ORDER BY m.id`,
-			)
-			.all(sid);
-		if (!rows.length) throw new ApiError(404, "unknown_session");
-		const lang = language(rows[0].lang);
-		const messages = rows
-			.filter((row) => row.role !== null)
-			.map(({ role, text }) => ({ role, text }));
-		if (rows[0].lead_id)
-			return {
-				lang,
-				messages,
-				lead_id: rows[0].lead_id,
-				chips: [],
-				review: null,
-				progress: null,
-				multi: false,
-				pending: false,
-			};
-		const { handoff_question, handoff_name, handoff_contact } = rows[0];
-		if (typeof handoff_question === "string")
-			return {
-				lang,
-				messages,
-				...handoffScreen(
-					{
-						question: handoff_question,
-						name: String(handoff_name),
-						contact: String(handoff_contact),
-					},
-					lang,
-				),
-			};
-		const screen = JSON.parse(String(rows[0].screen ?? "{}"));
-		if (screen.review) {
-			const pinned = db()
-				.prepare("SELECT content FROM revisions WHERE id=?")
-				.get(rows[0].version)!;
-			screen.review = labelReview(
-				screen.review,
-				JSON.parse(String(pinned.content))[
-					screen.review.serviceKind ? "services" : "products"
-				],
-				lang,
-			);
-		}
-		const context = attachmentContext(sid, lang);
-		const pendingAttachments = context?.instance
-			? db()
-					.prepare(
-						"SELECT id,name,size FROM files WHERE dialog=? AND field_instance=? AND created>? ORDER BY created,id",
-					)
-					.all(sid, context.instance, expiryCutoff())
-			: [];
-		return {
-			...generalScreen,
-			lang,
-			messages,
-			chips: JSON.parse(String(rows.at(-1)?.chips ?? "[]")),
-			...screen,
-			...context?.recovery,
-			pendingAttachments,
-		};
-	}
+	if (route === "history") return conversationHistory(sid);
 	const turn = writeTransaction(db(), () => {
 		const dialog = db()
 			.prepare(
@@ -267,7 +283,11 @@ async function dispatch(req: Request, route: Endpoint) {
 		if (lead) throw new ApiError(409, "submitted");
 		const input = readInput(body);
 		const value = input.values.join(", ");
-		const choices = input.kind === "text" ? [] : lastChoices(sid);
+		const choices =
+			input.kind === "text"
+				? []
+				: ((dialog.in_survey ? attachmentContext(sid, lang)?.screen.chips : undefined) ??
+					lastChoices(sid));
 		const visitorText = input.values
 			.map((id) => choices.find((c) => c.id === id)?.label ?? id)
 			.join(", ");

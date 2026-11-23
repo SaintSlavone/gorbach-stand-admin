@@ -1,23 +1,101 @@
 {
 	"products": {
 		"venkovni-zaluzie": {
-			"title": { "cs": "Venkovní žaluzie" },
+			"title": {
+				"cs": "Venkovní žaluzie",
+				"en": "Exterior blinds",
+				"de": "Außenjalousien",
+				"ru": "Наружные жалюзи",
+				"uk": "Зовнішні жалюзі"
+			},
 			"fields": [
 				{
 					"id": "count",
 					"q": "Kolik oken chcete zastínit?",
 					"type": "number",
 					"priority": "required",
-					"chips": ["1–3", "4–8", "9 a více"]
+					"chips": ["1–3", "4–8", "9 a více"],
+					"translations": {
+						"en": {
+							"q": "How many windows would you like to shade?",
+							"chips": { "9 a více": "9 or more" }
+						},
+						"de": {
+							"q": "Wie viele Fenster möchten Sie beschatten?",
+							"chips": { "9 a více": "9 oder mehr" }
+						},
+						"ru": {
+							"q": "Сколько окон вы хотите затенить?",
+							"chips": { "9 a více": "9 и более" }
+						},
+						"uk": {
+							"q": "Скільки вікон потрібно затінити?",
+							"chips": { "9 a více": "9 і більше" }
+						}
+					}
 				}
 			]
 		},
-		"venkovni-rolety": { "title": { "cs": "Venkovní rolety" }, "fields": [] },
-		"pergoly": { "title": { "cs": "Hliníkové pergoly" }, "fields": [] },
-		"purenit": { "title": { "cs": "Purenitové boxy" }, "fields": [] },
-		"markyzy": { "title": { "cs": "Markýzy" }, "fields": [] },
-		"vnitrni": { "title": { "cs": "Vnitřní stínění" }, "fields": [] },
-		"site": { "title": { "cs": "Sítě proti hmyzu" }, "fields": [] }
+		"venkovni-rolety": {
+			"title": {
+				"cs": "Venkovní rolety",
+				"en": "Exterior roller shutters",
+				"de": "Außenrollläden",
+				"ru": "Наружные рольставни",
+				"uk": "Зовнішні ролети"
+			},
+			"fields": []
+		},
+		"pergoly": {
+			"title": {
+				"cs": "Hliníkové pergoly",
+				"en": "Aluminium pergolas",
+				"de": "Aluminiumpergolen",
+				"ru": "Алюминиевые перголы",
+				"uk": "Алюмінієві перголи"
+			},
+			"fields": []
+		},
+		"purenit": {
+			"title": {
+				"cs": "Purenitové boxy",
+				"en": "Purenit boxes",
+				"de": "Purenit-Kästen",
+				"ru": "Короба из пуренита",
+				"uk": "Короби з пуреніту"
+			},
+			"fields": []
+		},
+		"markyzy": {
+			"title": {
+				"cs": "Markýzy",
+				"en": "Awnings",
+				"de": "Markisen",
+				"ru": "Маркизы",
+				"uk": "Маркізи"
+			},
+			"fields": []
+		},
+		"vnitrni": {
+			"title": {
+				"cs": "Vnitřní stínění",
+				"en": "Interior shading",
+				"de": "Innenliegender Sonnenschutz",
+				"ru": "Внутренняя солнцезащита",
+				"uk": "Внутрішній сонцезахист"
+			},
+			"fields": []
+		},
+		"site": {
+			"title": {
+				"cs": "Sítě proti hmyzu",
+				"en": "Insect screens",
+				"de": "Insektenschutzgitter",
+				"ru": "Москитные сетки",
+				"uk": "Москітні сітки"
+			},
+			"fields": []
+		}
 	},
 	"services": {
 		"cleaning": { "fields": [] },

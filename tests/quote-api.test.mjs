@@ -1421,3 +1421,286 @@ test("survey attachments advance, restore, and enforce ownership and expiry", as
 	assert.deepEqual(await api("submit", { sid }), lead);
 	assert.equal((await api("history?sid=" + sid)).lead_id, lead.lead_id);
 });
+
+function seedSurvey() {
+	return validateRevision(
+		"survey",
+		readFileSync(new URL("../data/initial/survey.json", import.meta.url), "utf8"),
+	);
+}
+
+function saveSurvey(revision) {
+	return Number(
+		sql
+			.prepare(
+				"INSERT INTO revisions(kind,content,editor,provenance) VALUES('survey',?,'tester','staff')",
+			)
+			.run(JSON.stringify(revision)).lastInsertRowid,
+	);
+}
+
+test("legacy Czech quote and service revisions render stock copy across five conversation languages", async () => {
+	const shipped = seedSurvey();
+	const legacy = structuredClone(shipped);
+	for (const product of Object.values(legacy.products)) {
+		product.title = { cs: product.title.cs };
+		for (const field of product.fields) delete field.translations;
+	}
+	for (const service of Object.values(legacy.services)) {
+		service.fields = [
+			{ id: "detail", q: "Poznámka k požadavku?", type: "text", priority: "required" },
+		];
+	}
+	const version = saveSurvey(legacy);
+	const originalChoice = "9 a více";
+	const originalTitle = "Venkovní žaluzie";
+	const originalQuestion = "Kolik oken chcete zastínit?";
+	const id = "venkovni-zaluzie";
+	const cases = [
+		[
+			"cs",
+			"Česky prosím",
+			originalTitle,
+			originalQuestion,
+			originalChoice,
+			"Čištění",
+			"neví",
+		],
+		[
+			"en",
+			"English please",
+			"Exterior blinds",
+			"How many windows would you like to shade?",
+			"9 or more",
+			"Cleaning",
+			"Not specified",
+		],
+		[
+			"de",
+			"Deutsch bitte",
+			"Außenjalousien",
+			"Wie viele Fenster möchten Sie beschatten?",
+			"9 oder mehr",
+			"Reinigung",
+			"Nicht angegeben",
+		],
+		[
+			"ru",
+			"На русском пожалуйста",
+			"Наружные жалюзи",
+			"Сколько окон вы хотите затенить?",
+			"9 и более",
+			"Чистка",
+			"Не указано",
+		],
+		[
+			"uk",
+			"Українською, будь ласка",
+			"Зовнішні жалюзі",
+			"Скільки вікон потрібно затінити?",
+			"9 і більше",
+			"Чищення",
+			"Не вказано",
+		],
+	];
+	const calls = requests.length;
+	for (const [lang, preference, title, question, option, cleaning, skipped] of cases) {
+		const { sid } = await api("start", { lang: "cs", page: "/" });
+		const msg = (body) => api("msg", { sid, ...body });
+		const history = () => api("history?sid=" + sid);
+		await msg({ text: preference });
+		const pick = await msg({ chip: "quote" });
+		assert.equal(pick.lang, lang);
+		assert.deepEqual(pick.chips, [{ id, label: title }]);
+		assert.equal(shipped.products[id].title[lang], title);
+		const stalePick = [{ id, label: originalTitle }];
+		sql
+			.prepare(
+				"UPDATE messages SET chips=? WHERE id=(SELECT MAX(id) FROM messages WHERE dialog=?)",
+			)
+			.run(JSON.stringify(stalePick), sid);
+		assert.deepEqual((await history()).chips, pick.chips);
+		const count = await msg({ chip: id });
+		assert.equal(count.messages[0].text, title);
+		assert.equal(count.question, question);
+		assert.equal(
+			shipped.products[id].fields[0].translations?.[lang]?.q ?? originalQuestion,
+			question,
+		);
+		assert.deepEqual(
+			count.chips.find((c) => c.id === originalChoice),
+			{ id: originalChoice, label: option },
+		);
+		const staleChips = count.chips.map((c) =>
+			c.id === originalChoice ? { ...c, label: originalChoice } : c,
+		);
+		const saved = sql
+			.prepare("SELECT version,state,screen FROM quote_sessions WHERE dialog=?")
+			.get(sid);
+		assert.equal(saved.version, version);
+		const staleScreen = JSON.stringify({
+			...JSON.parse(saved.screen),
+			question: originalQuestion,
+			chips: staleChips,
+		});
+		sql.prepare("UPDATE quote_sessions SET screen=? WHERE dialog=?").run(staleScreen, sid);
+		const lastMessage = sql
+			.prepare("SELECT MAX(id) AS id FROM messages WHERE dialog=?")
+			.get(sid).id;
+		sql
+			.prepare("UPDATE messages SET body=?,chips=? WHERE id=?")
+			.run(originalQuestion, JSON.stringify(staleChips), lastMessage);
+		const restored = await history();
+		assert.equal(restored.question, question);
+		assert.equal(restored.messages.at(-1).text, question);
+		assert.deepEqual(restored.chips, count.chips);
+		assert.equal(
+			sql.prepare("SELECT body FROM messages WHERE id=?").get(lastMessage).body,
+			originalQuestion,
+		);
+		assert.equal(
+			sql.prepare("SELECT screen FROM quote_sessions WHERE dialog=?").get(sid).screen,
+			staleScreen,
+		);
+		assert.equal((await msg({ chip: originalChoice })).messages[0].text, option);
+		await msg({ text: "Jana" });
+		const review = await msg({ text: "jana@example.org" });
+		assert.deepEqual(review.review.products[0], {
+			product: id,
+			answers: { count: originalChoice },
+			title,
+			questionLabels: { count: question },
+			answerLabels: { count: option },
+		});
+		assert.deepEqual((await history()).review, review.review);
+		await api("submit", { sid });
+		const lead = sql
+			.prepare("SELECT kind,product,fields FROM leads WHERE dialog=?")
+			.get(sid);
+		assert.equal(lead.kind, "quote");
+		assert.equal(lead.product, id);
+		assert.deepEqual(JSON.parse(lead.fields).products, [
+			{ product: id, answers: { count: originalChoice } },
+		]);
+
+		const service = await api("start", { lang: "cs", page: "/" });
+		const askService = (body) => api("msg", { sid: service.sid, ...body });
+		await askService({ text: preference });
+		const services = await askService({ chip: "service" });
+		assert.equal(services.chips.length, 6);
+		assert.deepEqual(services.chips[0], { id: "cleaning", label: cleaning });
+		assert.deepEqual((await api("history?sid=" + service.sid)).chips, services.chips);
+		assert.equal(
+			(await askService({ chip: "cleaning" })).question,
+			"Poznámka k požadavku?",
+		);
+		await askService({ chip: "skip" });
+		await askService({ text: "Jana" });
+		const serviceReview = await askService({ text: "jana@example.org" });
+		assert.equal(serviceReview.review.products[0].title, cleaning);
+		assert.equal(serviceReview.review.products[0].answerLabels.detail, skipped);
+		assert.equal(serviceReview.review.products[0].answers.detail, "neví");
+		await api("submit", { sid: service.sid });
+		const serviceLead = sql
+			.prepare("SELECT kind,product,fields,summary FROM leads WHERE dialog=?")
+			.get(service.sid);
+		assert.equal(serviceLead.kind, "cleaning");
+		assert.equal(serviceLead.product, "");
+		assert.match(serviceLead.summary, /^Servisní požadavek: cleaning/);
+		assert.deepEqual(JSON.parse(serviceLead.fields).products, [
+			{ product: "cleaning", answers: { detail: "neví" } },
+		]);
+	}
+	assert.equal(requests.length, calls);
+});
+
+test("staff survey overrides and translated attachment recovery preserve raw answers and transcript", async () => {
+	const id = "venkovni-zaluzie";
+	const survey = seedSurvey();
+	const product = survey.products[id];
+	product.title = { cs: "Zakázkové žaluzie", en: "Made-to-order blinds" };
+	const count = product.fields[0];
+	count.q = "Vlastní otázka na okna?";
+	count.translations = {
+		en: {
+			q: "Staff window-count question",
+			chips: { "9 a více": "Staff nine-plus option" },
+		},
+	};
+	product.fields.push(
+		{
+			id: "photo",
+			q: "Nahrajte fotografii",
+			type: "file",
+			priority: "required",
+			translations: { en: { q: "Upload a photo of your window" } },
+		},
+		{ id: "literal", q: "Vlastní text?", type: "text", priority: "required" },
+		{ id: "notes1", q: "Poznámka 1?", type: "text", priority: "optional" },
+		{ id: "notes2", q: "Poznámka 2?", type: "text", priority: "optional" },
+	);
+	saveSurvey(survey);
+	const { sid } = await api("start", { lang: "cs", page: "/" });
+	const msg = (body) => api("msg", { sid, ...body });
+	await msg({ text: "English please" });
+	assert.deepEqual((await msg({ chip: "quote" })).chips, [
+		{ id, label: "Made-to-order blinds" },
+	]);
+	const windowCount = await msg({ chip: id });
+	assert.equal(windowCount.question, "Staff window-count question");
+	assert.deepEqual(
+		windowCount.chips.find((c) => c.id === "9 a více"),
+		{ id: "9 a více", label: "Staff nine-plus option" },
+	);
+	const photo = await msg({ chip: "9 a více" });
+	assert.equal(photo.question, "Upload a photo of your window");
+	const first = (await upload(sid, "%PDF-1.7")).data.file;
+	assert.deepEqual((await api("history?sid=" + sid)).pendingAttachments, [first]);
+	await msg({ files: [first.id] });
+	await msg({ text: "neví" });
+	await msg({ text: "My windows are on the first floor." });
+	await msg({ text: "Jana" });
+	const review = await msg({ text: "jana@example.org" });
+	const item = review.review.products[0];
+	assert.equal(item.answerLabels.literal, "neví");
+	assert.equal(item.answerLabels.photo, "Attachment added");
+	assert.equal(item.answerLabels.notes1, "See note");
+	assert.equal(item.answers.notes1, "viz poznámka");
+	assert.equal(item.notes, "My windows are on the first floor.");
+	sql.prepare("UPDATE files SET created=0 WHERE id=?").run(first.id);
+	const history = await api("history?sid=" + sid);
+	assert.equal(history.question, "Upload a photo of your window");
+	assert.deepEqual(history.attachmentRecovery, { product: id, field: "photo" });
+	assert.equal(history.messages.at(-1).text, review.question);
+	const replacement = (await upload(sid, "%PDF-1.7")).data.file;
+	assert.deepEqual((await api("history?sid=" + sid)).pendingAttachments, [replacement]);
+	assert.equal(
+		(await msg({ files: [replacement.id] })).review.products[0].answerLabels.photo,
+		"Attachment added",
+	);
+	await api("submit", { sid });
+	const stored = JSON.parse(
+		sql.prepare("SELECT fields FROM leads WHERE dialog=?").get(sid).fields,
+	).products[0];
+	assert.deepEqual(stored.answers, {
+		count: "9 a více",
+		photo: "attachment",
+		literal: "neví",
+		notes1: "viz poznámka",
+		notes2: "viz poznámka",
+	});
+	assert.deepEqual(stored.attachments, { photo: [replacement.id] });
+	assert.equal(Object.hasOwn(stored, "answerMarkers"), false);
+
+	const custom = await api("start", { lang: "de", page: "/" });
+	const askCustom = (body) => api("msg", { sid: custom.sid, ...body });
+	assert.deepEqual((await askCustom({ chip: "quote" })).chips, [
+		{ id, label: "Zakázkové žaluzie" },
+	]);
+	const fallback = await askCustom({ chip: id });
+	assert.equal(fallback.question, "Vlastní otázka na okna?");
+	assert.deepEqual(
+		fallback.chips.find((c) => c.id === "9 a více"),
+		{ id: "9 a více", label: "9 a více" },
+	);
+});
