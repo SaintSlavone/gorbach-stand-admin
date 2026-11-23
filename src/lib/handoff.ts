@@ -40,9 +40,7 @@ export function beginHandoff(sid: string, question: string) {
 	db()
 		.prepare("INSERT INTO handoff_sessions(dialog,question) VALUES(?,?)")
 		.run(sid, question);
-	db()
-		.prepare("UPDATE dialogs SET unsupported_streak=0,consultation_evidence='' WHERE id=?")
-		.run(sid);
+	db().prepare("UPDATE dialogs SET unsupported_streak=0 WHERE id=?").run(sid);
 	return { question, name: "", contact: "" };
 }
 

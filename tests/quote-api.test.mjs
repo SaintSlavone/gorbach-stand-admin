@@ -151,7 +151,7 @@ test("localized price phrases open product selection and ordinary text stays in 
 			text,
 		);
 	}
-	for (const text of ["Dobrý den!", "Kolik stojících lidí?", "necena"]) {
+	for (const text of ["Kolik stojících lidí?", "necena"]) {
 		const sid = await start();
 		const result = await api("msg", { sid, text });
 		assert.deepEqual(
@@ -293,7 +293,12 @@ test("general questions use pinned knowledge and restore validated replies and f
 	const result = (payload) =>
 		Response.json({
 			candidates: [
-				{ finishReason: "STOP", content: { parts: [{ text: JSON.stringify(payload) }] } },
+				{
+					finishReason: "STOP",
+					content: {
+						parts: [{ text: JSON.stringify({ scope: "consultation", ...payload }) }],
+					},
+				},
 			],
 		});
 	provider = () => {
@@ -381,6 +386,7 @@ test("concurrent provider attempts respect rolling session and IP limits and the
 							{
 								text: JSON.stringify({
 									unknown: false,
+									scope: "consultation",
 									reply: "Montujeme žaluzie.",
 									evidence: "Montujeme žaluzie.",
 								}),
@@ -592,9 +598,121 @@ function geminiResponse(result) {
 		],
 	});
 }
-function geminiResult(reply, unknown = false, language, evidence = reply) {
-	return geminiResponse({ reply, evidence, unknown, language });
+function geminiResult(
+	reply,
+	unknown = false,
+	language,
+	evidence = reply,
+	scope = "consultation",
+) {
+	return geminiResponse({ reply, evidence, unknown, language, scope });
 }
+test("standalone greetings and language requests introduce the assistant in each language without calling Gemini", async () => {
+	const cases = [
+		[
+			"cs",
+			"Dobrý den!",
+			"Umíš česky?",
+			/AI asistent Gorbach.*vybrat stínění/,
+			/psát česky/,
+		],
+		[
+			"en",
+			"Hello!",
+			"Do you understand english?",
+			/AI assistant.*help you choose shading/,
+			/help in English/,
+		],
+		[
+			"de",
+			"Hallo!",
+			"Kannst du Deutsch?",
+			/KI-Assistent von Gorbach.*Sonnenschutz/,
+			/auf Deutsch helfen/,
+		],
+		[
+			"ru",
+			"Привет",
+			"Ты понимаешь русский?",
+			/Здравствуйте, я ИИ-ассистент Gorbach.*подобрать солнцезащиту/,
+			/понимаю русский/,
+		],
+		[
+			"uk",
+			"Привіт!",
+			"Ти розумієш українську?",
+			/ШІ-асистент Gorbach.*підібрати сонцезахист/,
+			/допомогти українською/,
+		],
+	];
+	const calls = requests.length;
+	for (const [lang, greeting, capability, introduction, confirmation] of cases) {
+		const { sid } = await api("start", { lang: "cs", page: "/" });
+		const greeted = await api("msg", { sid, text: greeting });
+		assert.equal(greeted.lang, lang);
+		assert.match(greeted.messages.at(-1).text, introduction);
+		assert.equal(greeted.chips.length, 3);
+		const confirmed = await api("msg", { sid, text: capability });
+		assert.equal(confirmed.lang, lang);
+		assert.match(confirmed.messages.at(-1).text, confirmation);
+		assert.equal((await api("history?sid=" + sid)).lang, lang);
+	}
+	const { sid } = await api("start", { lang: "cs", page: "/" });
+	const formal = await api("msg", { sid, text: "Вы говорите на русском языке?" });
+	assert.equal(formal.lang, "ru");
+	assert.match(formal.messages.at(-1).text, /понимаю русский/);
+	assert.equal(requests.length, calls);
+});
+test("a greeting prefix preserves a substantive product question or deterministic localized quote", async () => {
+	sql.exec("DELETE FROM gemini_attempts");
+	const source = "Наружные жалюзи регулируют дневной свет.";
+	addKnowledge(source, "ru");
+	provider = () => geminiResult(source, false, "ru");
+	const { sid } = await api("start", { lang: "cs", page: "/" });
+	const calls = requests.length;
+	const question = "Привет, как наружные жалюзи регулируют свет?";
+	const grounded = await api("msg", { sid, text: question });
+	assert.equal(grounded.lang, "ru");
+	assert.equal(grounded.messages.at(-1).text.split("\n\n")[0], source);
+	assert.equal(requests.length, calls + 1);
+	assert.equal(JSON.parse(requests.at(-1).contents[0].parts[0].text).question, question);
+	const quote = await api("start", { lang: "cs", page: "/" });
+	const pick = await api("msg", { sid: quote.sid, text: "Привет, какая цена жалюзи?" });
+	assert.equal(pick.lang, "ru");
+	assert.match(pick.question, /Какой продукт вас интересует/);
+	assert.equal((await api("history?sid=" + quote.sid)).lang, "ru");
+	assert.equal(requests.length, calls + 1);
+});
+test("greetings and language requests cannot populate an existing specialist contact", async () => {
+	const { sid } = await api("start", { lang: "cs", page: "/" });
+	const msg = (text) => api("msg", { sid, text });
+	const calls = requests.length;
+	const redirect = await msg("Расскажите о кошках");
+	assert.equal(redirect.lang, "ru");
+	assert.match(redirect.messages.at(-1).text, /помочь выбрать солнцезащиту/);
+	await msg("Что едят кошки?");
+	const greet = await msg("Привет");
+	assert.match(greet.messages[1].text, /^Здравствуйте/);
+	assert.equal(greet.messages.at(-1).text, greet.question);
+	const capability = await msg("Ты понимаешь русский?");
+	assert.equal(capability.lang, "ru");
+	assert.match(capability.messages[1].text, /понимаю русский/);
+	assert.equal(capability.messages.at(-1).text, capability.question);
+	const restored = await api("history?sid=" + sid);
+	assert.equal(restored.lang, "ru");
+	assert.deepEqual(restored.messages.slice(-3), capability.messages);
+	assert.deepEqual((await api("submit", { sid }, 400)).missing, ["name", "contact"]);
+	await msg("Мария Новак");
+	const phonePrompt = await msg("Hello");
+	assert.equal(phonePrompt.input, "phone");
+	assert.equal(phonePrompt.lang, "en");
+	assert.match(phonePrompt.question, /phone number or email/);
+	assert.deepEqual((await api("submit", { sid }, 400)).missing, ["contact"]);
+	await msg("maria@example.org");
+	await api("submit", { sid });
+	assert.equal((await api("history?sid=" + sid)).lang, "en");
+	assert.equal(requests.length, calls);
+});
 test("Czech page handles an offline English capability question and persists language until a clear switch", async () => {
 	sql.exec("DELETE FROM gemini_attempts");
 	const czech = "Montujeme venkovní žaluzie.";
@@ -705,11 +823,13 @@ test("status, start and reset introduce the AI agent and offer three starters in
 		assert.match(status.greeting, identity);
 		assert.equal(status.chips.length, 3);
 		const first = await api("start", { lang, page: "/" });
+		assert.equal(first.lang, lang);
 		assert.equal(first.messages[0].text, status.greeting);
 		assert.deepEqual(first.chips, status.chips);
 		const reset = await api("reset", { sid: first.sid });
 		assert.notEqual(reset.sid, first.sid);
 		const history = await api("history?sid=" + reset.sid);
+		assert.equal(history.lang, lang);
 		assert.deepEqual(history.messages, first.messages);
 		assert.deepEqual(history.chips, status.chips);
 	}
@@ -726,7 +846,10 @@ test("grounded consultation discovers requirements, carries verified context and
 	provider = () => geminiResult(shade);
 	const result = await msg("How much sunlight can exterior blinds block?");
 	assert.equal(result.messages[1].text.split("\n\n")[0], shade);
-	assert.match(result.messages[1].text, /What would you like to shade\?/);
+	assert.match(
+		result.messages[1].text,
+		/priority reducing heat or adjusting the daylight/,
+	);
 	assert.deepEqual(
 		result.chips.map((chip) => chip.id),
 		["products", "quote", "question"],
@@ -734,6 +857,7 @@ test("grounded consultation discovers requirements, carries verified context and
 	provider = () => geminiResult(control);
 	const followUp = await msg("Can they be motorized?");
 	assert.equal(followUp.messages[1].text.split("\n\n")[0], control);
+	assert.match(followUp.messages[1].text, /individually or control several together/);
 	const outbound = JSON.parse(requests.at(-1).contents[0].parts[0].text);
 	assert.equal(outbound.previousEvidence, shade);
 	assert.equal(outbound.question, "Can they be motorized?");
@@ -749,12 +873,75 @@ test("grounded consultation discovers requirements, carries verified context and
 		["products", "quote", "specialist"],
 	);
 	const discovery = await api("msg", { sid, chip: "products" });
-	assert.match(discovery.messages[1].text, /windows, a patio/);
+	assert.match(
+		discovery.messages[1].text,
+		/priority reducing heat or adjusting the daylight/,
+	);
 	assert.equal(discovery.chips.length, 3);
 	const requestsBeforeQuote = requests.length;
 	const askQuote = await msg("How much are exterior blinds?");
 	assert.match(askQuote.question, /Which product/);
 	assert.equal(requests.length, requestsBeforeQuote);
+});
+test("product context survives an animal redirect, rejects evidence for another product and isolates a topic switch", async () => {
+	sql.exec("DELETE FROM gemini_attempts");
+	const blinds = "Exterior blinds let you adjust the daylight by tilting the slats.";
+	const controls = "Motorized controls are available.";
+	const awnings = "Awnings can shade a patio.";
+	const awningFact = "Compatible with standard mounting brackets.";
+	sql
+		.prepare(
+			"INSERT INTO revisions(kind,content,editor,provenance) VALUES('knowledge',?,'tester','staff')",
+		)
+		.run(
+			JSON.stringify([
+				{
+					id: "venkovni-zaluzie",
+					title: "Outdoor blinds",
+					lang: "en",
+					text: `${blinds}\n${controls}`,
+				},
+				{ id: "markyzy", title: "Awnings", lang: "en", text: `${awnings}\n${awningFact}` },
+			]),
+		);
+	const { sid } = await api("start", { lang: "en", page: "/" });
+	const msg = (text) => api("msg", { sid, text });
+	const outbound = () => JSON.parse(requests.at(-1).contents[0].parts[0].text);
+	provider = () => geminiResult(blinds, false, "en");
+	await msg(
+		"My name is Jane Nováková. Can exterior blinds reduce daylight? jane@example.org",
+	);
+	const before = requests.length;
+	const redirect = await msg("Tell me about cats");
+	assert.match(redirect.messages.at(-1).text, /help you choose shading/);
+	assert.equal(requests.length, before);
+	assert.equal((await api("history?sid=" + sid)).lang, "en");
+	provider = () => geminiResult(controls, false, "en");
+	const follow = await msg("And motorized?");
+	assert.match(follow.messages.at(-1).text, /individually or control several together/);
+	assert.equal(outbound().previousProduct, "outdoor-blinds");
+	assert.equal(outbound().previousEvidence, blinds);
+	assert.doesNotMatch(JSON.stringify(outbound()), /Jane Nováková|jane@example\.org/);
+	provider = () => geminiResult(awningFact, false, "en");
+	const rejected = await msg("Will they fit standard brackets?");
+	assert.match(rejected.messages.at(-1).text, /don’t have a verified answer/);
+	assert.equal(outbound().previousProduct, "outdoor-blinds");
+	provider = () => geminiResult(awnings, false, "en");
+	const newTopic = await msg("Can awnings shade a patio that my cat uses?");
+	assert.match(newTopic.messages.at(-1).text, /How wide is the part of your patio/);
+	assert.equal(outbound().requestedProduct, "awnings");
+	assert.equal(outbound().previousEvidence, undefined);
+	provider = () => geminiResult(blinds, false, "en", blinds, "unrelated");
+	const unrelated = await msg("What song should I write about exterior blinds?");
+	assert.match(unrelated.messages.at(-1).text, /don’t have a verified answer/);
+	provider = () => geminiResult(awningFact, false, "en");
+	await msg("Could they use brackets?");
+	assert.equal(outbound().previousProduct, "awnings");
+	assert.equal(outbound().previousEvidence, awnings);
+	provider = () => geminiResult(blinds, false, "en");
+	await msg("Could exterior blinds be fitted in my home?");
+	assert.equal(outbound().requestedProduct, "outdoor-blinds");
+	assert.equal(outbound().previousEvidence, controls);
 });
 test("two unsupported questions open a restorable handoff and explicit submission creates one manager lead", async () => {
 	sql.exec("DELETE FROM gemini_attempts");

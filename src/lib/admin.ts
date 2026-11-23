@@ -37,6 +37,7 @@ export function db() {
 			["utm", "TEXT NOT NULL DEFAULT '{}'"],
 			["unsupported_streak", "INTEGER NOT NULL DEFAULT 0"],
 			["consultation_evidence", "TEXT NOT NULL DEFAULT ''"],
+			["consultation_context", "TEXT NOT NULL DEFAULT '{}'"],
 		]) {
 			if (!dialogColumns.has(name))
 				database.exec(`ALTER TABLE dialogs ADD COLUMN ${name} ${definition}`);

@@ -2,7 +2,17 @@ import { readUpload, storeUpload } from "./file-upload";
 import { writeTransaction, expiryCutoff } from "./attachments";
 import { clientBucket, reserveGeminiAttempt } from "./gemini-quota";
 import { knowledgeAnswer } from "./knowledge-answer";
-import { detectVisitorLanguage, languageRequest } from "./chat-language";
+import {
+	detectVisitorLanguage,
+	greetingLanguage,
+	languageRequest,
+} from "./chat-language";
+import {
+	consultationNeed,
+	productTopic,
+	readConsultationContext,
+	refersToProduct,
+} from "./consultation-context";
 import {
 	answerHandoff,
 	beginHandoff,
@@ -22,10 +32,13 @@ import { randomBytes } from "node:crypto";
 import { db } from "./admin";
 
 import {
+	assistantIntroduction,
 	consultation,
 	consultationChips,
 	copy,
+	discoveryQuestion,
 	language,
+	languageConfirmation,
 	startCopy,
 	type Language,
 } from "./chat-copy";
@@ -45,7 +58,7 @@ function start(lang: Language, page: string, utm: string) {
 	db()
 		.prepare("INSERT INTO messages(dialog,role,body,chips) VALUES(?,'bot',?,?)")
 		.run(sid, greeting, JSON.stringify(chips));
-	return { sid, messages: [{ role: "bot", text: greeting }], chips };
+	return { sid, lang, messages: [{ role: "bot", text: greeting }], chips };
 }
 const generalScreen = {
 	chips: [],
@@ -92,29 +105,33 @@ function isQuoteRequest(value: string, lang: Language) {
 		englishPrice.test(normalized) || (price.test(normalized) && product.test(normalized))
 	);
 }
-function saveExchange(
+function saveExchange<Screen extends { chips: { id: string; label: string }[] }>(
 	sid: string,
 	visitor: string,
-	reply: string,
-	chips: { id: string; label: string }[],
+	reply: string | string[],
+	lang: Language,
+	screen: Screen,
 	unknown = false,
 ) {
+	const replies = typeof reply === "string" ? [reply] : reply;
 	const messages = [
 		{ role: "visitor", text: visitor },
-		{ role: "bot", text: reply },
+		...replies.map((text) => ({ role: "bot", text })),
 	];
 	const insert = db().prepare(
 		"INSERT INTO messages(dialog,role,body,chips,unknown) VALUES(?,?,?,?,?)",
 	);
-	for (const m of messages)
+	for (const [index, message] of messages.entries()) {
+		const last = index === messages.length - 1;
 		insert.run(
 			sid,
-			m.role,
-			m.text,
-			JSON.stringify(m.role === "bot" ? chips : []),
-			Number(m.role === "bot" && unknown),
+			message.role,
+			message.text,
+			JSON.stringify(last ? screen.chips : []),
+			Number(last && unknown),
 		);
-	return messages;
+	}
+	return { ...screen, lang, messages };
 }
 type Endpoint = "status" | "start" | "msg" | "history" | "reset" | "submit" | "file";
 async function dispatch(req: Request, route: Endpoint) {
@@ -169,11 +186,13 @@ async function dispatch(req: Request, route: Endpoint) {
 			)
 			.all(sid);
 		if (!rows.length) throw new ApiError(404, "unknown_session");
+		const lang = language(rows[0].lang);
 		const messages = rows
 			.filter((row) => row.role !== null)
 			.map(({ role, text }) => ({ role, text }));
 		if (rows[0].lead_id)
 			return {
+				lang,
 				messages,
 				lead_id: rows[0].lead_id,
 				chips: [],
@@ -185,6 +204,7 @@ async function dispatch(req: Request, route: Endpoint) {
 		const { handoff_question, handoff_name, handoff_contact } = rows[0];
 		if (typeof handoff_question === "string")
 			return {
+				lang,
 				messages,
 				...handoffScreen(
 					{
@@ -192,7 +212,7 @@ async function dispatch(req: Request, route: Endpoint) {
 						name: String(handoff_name),
 						contact: String(handoff_contact),
 					},
-					language(rows[0].lang),
+					lang,
 				),
 			};
 		const screen = JSON.parse(String(rows[0].screen ?? "{}"));
@@ -205,10 +225,10 @@ async function dispatch(req: Request, route: Endpoint) {
 				JSON.parse(String(pinned.content))[
 					screen.review.serviceKind ? "services" : "products"
 				],
-				String(rows[0].lang),
+				lang,
 			);
 		}
-		const context = attachmentContext(sid, String(rows[0].lang));
+		const context = attachmentContext(sid, lang);
 		const pendingAttachments = context?.instance
 			? db()
 					.prepare(
@@ -218,6 +238,7 @@ async function dispatch(req: Request, route: Endpoint) {
 			: [];
 		return {
 			...generalScreen,
+			lang,
 			messages,
 			chips: JSON.parse(String(rows.at(-1)?.chips ?? "[]")),
 			...screen,
@@ -228,7 +249,7 @@ async function dispatch(req: Request, route: Endpoint) {
 	const turn = writeTransaction(db(), () => {
 		const dialog = db()
 			.prepare(
-				`SELECT lang,page,utm,knowledge_version,consultation_evidence,
+				`SELECT lang,page,utm,knowledge_version,consultation_evidence,consultation_context,
 				 EXISTS(SELECT 1 FROM quote_sessions WHERE dialog=dialogs.id) AS in_survey
 				 FROM dialogs WHERE id=?`,
 			)
@@ -250,6 +271,33 @@ async function dispatch(req: Request, route: Endpoint) {
 		const visitorText = input.values
 			.map((id) => choices.find((c) => c.id === id)?.label ?? id)
 			.join(", ");
+		const freeText = input.kind === "text" && !input.files && !dialog.in_survey;
+		const requestedLanguage = freeText ? languageRequest(value) : undefined;
+		const courtesyLanguage =
+			requestedLanguage ?? (freeText ? greetingLanguage(value) : undefined);
+		if (courtesyLanguage) {
+			db()
+				.prepare("UPDATE dialogs SET lang=?,unsupported_streak=0 WHERE id=?")
+				.run(courtesyLanguage, sid);
+			if (handoff) {
+				const screen = handoffScreen(handoff, courtesyLanguage);
+				const intro = requestedLanguage
+					? languageConfirmation[courtesyLanguage]
+					: assistantIntroduction[courtesyLanguage];
+				return saveExchange(
+					sid,
+					visitorText,
+					[intro, screen.question],
+					courtesyLanguage,
+					screen,
+				);
+			}
+			const screen = { ...generalScreen, chips: consultationChips(courtesyLanguage, false) };
+			const reply = requestedLanguage
+				? consultation[courtesyLanguage].languageHelp
+				: startCopy(courtesyLanguage).greeting;
+			return saveExchange(sid, visitorText, reply, courtesyLanguage, screen);
+		}
 		if (handoff) {
 			const next = answerHandoff(sid, handoff, input);
 			const screen = next
@@ -260,27 +308,7 @@ async function dispatch(req: Request, route: Endpoint) {
 					};
 			const reply =
 				"question" in screen ? String(screen.question) : consultation[lang].discover;
-			return { messages: saveExchange(sid, visitorText, reply, screen.chips), ...screen };
-		}
-		const freeText = input.kind === "text" && !input.files && !dialog.in_survey;
-		const requestedLanguage = freeText ? languageRequest(value) : undefined;
-		if (requestedLanguage) {
-			const screen = {
-				...generalScreen,
-				chips: consultationChips(requestedLanguage, false),
-			};
-			db()
-				.prepare("UPDATE dialogs SET lang=?,unsupported_streak=0 WHERE id=?")
-				.run(requestedLanguage, sid);
-			return {
-				messages: saveExchange(
-					sid,
-					visitorText,
-					consultation[requestedLanguage].languageHelp,
-					screen.chips,
-				),
-				...screen,
-			};
+			return saveExchange(sid, visitorText, reply, lang, screen);
 		}
 		const detectedLanguage = freeText ? detectVisitorLanguage(value) : undefined;
 		const turnLanguage = detectedLanguage ?? lang;
@@ -296,12 +324,13 @@ async function dispatch(req: Request, route: Endpoint) {
 		if (survey) {
 			if (turnLanguage !== lang)
 				db().prepare("UPDATE dialogs SET lang=? WHERE id=?").run(turnLanguage, sid);
-			return {
-				messages: saveExchange(sid, visitorText, survey.question, survey.chips),
-				...survey,
-			};
+			return saveExchange(sid, visitorText, survey.question, turnLanguage, survey);
 		}
 		if (input.files) throw new ApiError(400, "invalid_attachment");
+		const context = readConsultationContext(
+			String(dialog.consultation_context),
+			String(dialog.consultation_evidence),
+		);
 		if (input.kind === "text") {
 			const revision = db()
 				.prepare("SELECT content FROM revisions WHERE id=? AND kind='knowledge'")
@@ -312,7 +341,7 @@ async function dispatch(req: Request, route: Endpoint) {
 					lang,
 					detectedLanguage,
 					lastMessage: lastMessageId(sid),
-					previousEvidence: String(dialog.consultation_evidence),
+					context,
 					attachmentCount: Number(
 						db()
 							.prepare("SELECT count(*) AS n FROM files WHERE dialog=? AND created>?")
@@ -333,28 +362,26 @@ async function dispatch(req: Request, route: Endpoint) {
 				)
 				.get(sid)!;
 			const screen = handoffScreen(beginHandoff(sid, String(lastVisitor.body)), lang);
-			return {
-				messages: saveExchange(sid, visitorText, screen.question, screen.chips),
-				...screen,
-			};
+			return saveExchange(sid, visitorText, screen.question, lang, screen);
 		}
 		if (input.kind !== "chip" || !["products", "question"].includes(value))
 			throw new ApiError(400, "invalid_chip");
 		const screen = { ...generalScreen, chips: consultationChips(lang, false) };
 		const reply =
-			value === "products" ? consultation[lang].discover : consultation[lang].ask;
-		return { messages: saveExchange(sid, visitorText, reply, screen.chips), ...screen };
+			value === "question"
+				? consultation[lang].ask
+				: context.active === "general"
+					? consultation[lang].discover
+					: discoveryQuestion(lang, context.active, undefined);
+		return saveExchange(sid, visitorText, reply, lang, screen);
 	});
 	if (!("general" in turn) || !turn.general) return turn;
-	const {
-		text,
-		lang,
-		detectedLanguage,
-		content,
-		attachmentCount,
-		lastMessage,
-		previousEvidence,
-	} = turn.general;
+	const { text, lang, detectedLanguage, content, attachmentCount, lastMessage, context } =
+		turn.general;
+	const requestedProduct = productTopic(text);
+	const referencedTopic =
+		!requestedProduct && refersToProduct(text) ? context.active : undefined;
+	const priorTopic = requestedProduct ?? referencedTopic;
 	const ip = clientBucket(req);
 	const answer = await knowledgeAnswer(
 		text,
@@ -363,7 +390,12 @@ async function dispatch(req: Request, route: Endpoint) {
 		content,
 		attachmentCount,
 		() => writeTransaction(db(), () => reserveGeminiAttempt(sid, ip)),
-		previousEvidence,
+		{
+			requestedProduct,
+			previousProduct:
+				referencedTopic && referencedTopic !== "general" ? referencedTopic : undefined,
+			previousEvidence: priorTopic ? context.evidence[priorTopic] : undefined,
+		},
 	);
 	return writeTransaction(db(), () => {
 		const sql = db();
@@ -379,29 +411,42 @@ async function dispatch(req: Request, route: Endpoint) {
 		if (answer.outcome === "unsupported" || answer.outcome === "answered") {
 			const streak =
 				answer.outcome === "unsupported" ? Number(dialog.unsupported_streak) + 1 : 0;
+			if (answer.outcome === "answered") {
+				context.evidence[answer.product ?? "general"] = answer.evidence;
+				context.active = answer.product ?? "general";
+			} else if (answer.related && requestedProduct) context.active = requestedProduct;
+			sql
+				.prepare("UPDATE dialogs SET unsupported_streak=?,consultation_context=? WHERE id=?")
+				.run(streak, JSON.stringify(context), sid);
 			if (streak >= unsupportedLimit) {
 				const screen = handoffScreen(beginHandoff(sid, text), responseLanguage);
-				return {
-					messages: saveExchange(sid, text, screen.question, screen.chips, true),
-					...screen,
-				};
+				return saveExchange(sid, text, screen.question, responseLanguage, screen, true);
 			}
-			sql
-				.prepare("UPDATE dialogs SET unsupported_streak=?,consultation_evidence=? WHERE id=?")
-				.run(streak, answer.outcome === "answered" ? answer.evidence : "", sid);
 		}
 		const chips = consultationChips(responseLanguage, answer.outcome !== "answered");
-		const reply =
-			answer.outcome === "answered"
-				? answer.text + "\n\n" + labels.next
-				: answer.outcome === "limited"
-					? answer.text
-					: labels[answer.outcome];
-		return {
-			...generalScreen,
-			chips,
-			messages: saveExchange(sid, text, reply, chips, answer.outcome === "unsupported"),
-		};
+		if (answer.outcome === "answered") {
+			const followUp = discoveryQuestion(
+				responseLanguage,
+				answer.product,
+				consultationNeed(text),
+			);
+			const priorReply = sql
+				.prepare("SELECT body FROM messages WHERE id=?")
+				.get(lastMessage ?? null)?.body;
+			const reply = String(priorReply ?? "").endsWith(followUp)
+				? answer.text
+				: answer.text + "\n\n" + followUp;
+			return saveExchange(sid, text, reply, responseLanguage, { ...generalScreen, chips });
+		}
+		const reply = answer.outcome === "limited" ? answer.text : labels[answer.outcome];
+		return saveExchange(
+			sid,
+			text,
+			reply,
+			responseLanguage,
+			{ ...generalScreen, chips },
+			answer.outcome === "unsupported",
+		);
 	});
 }
 export function handler(route: Endpoint) {
