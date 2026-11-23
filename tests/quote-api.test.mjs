@@ -79,7 +79,10 @@ async function api(route, body, status = 200, headers = {}) {
 			: {},
 	);
 	const data = await response.json();
-	assert.equal(response.status, status, JSON.stringify(data));
+	assert.ok(
+		[status].flat().includes(response.status),
+		`${response.status} ${JSON.stringify(data)}`,
+	);
 	return data;
 }
 async function start() {
@@ -151,11 +154,12 @@ test("localized price phrases open product selection and ordinary text stays in 
 	for (const text of ["Dobrý den!", "Kolik stojících lidí?", "necena"]) {
 		const sid = await start();
 		const result = await api("msg", { sid, text });
-		assert.deepEqual(result.chips, [], text);
-		assert.equal(
-			result.messages.at(-1).text,
-			"Tuto informaci nemám ověřenou. Upřesní ji náš specialista.",
+		assert.deepEqual(
+			result.chips.map((choice) => choice.id),
+			["products", "quote", "specialist"],
+			text,
 		);
+		assert.match(result.messages.at(-1).text, /stínění/);
 	}
 });
 test("review labels and answers use the pinned survey after a newer revision is saved", async () => {
@@ -283,7 +287,7 @@ test("general questions use pinned knowledge and restore validated replies and f
 	const initial = requests.length;
 	assert.equal(
 		(await msg({ chip: "question" })).messages[1].text,
-		"Please enter your question.",
+		"What would you like to know about Gorbach shading?",
 	);
 	assert.equal(requests.length, initial);
 	const result = (payload) =>
@@ -302,7 +306,8 @@ test("general questions use pinned knowledge and restore validated replies and f
 			"When do you open? My name is Jane Nováková. Reach me at jane@example.org or +420 123 456 789.",
 		attachments: ["private-file.pdf"],
 	});
-	assert.equal(reply.messages[1].text, old);
+	assert.equal(reply.messages[1].text.split("\n\n")[0], old);
+	assert.match(reply.messages[1].text, /What would you like to shade\?/);
 	assert.ok(reply.messages[0].text.includes("Jane Nováková"));
 	const body = JSON.stringify(requests.at(-1));
 	assert.ok(body.includes("When do you open?"));
@@ -319,34 +324,47 @@ test("general questions use pinned knowledge and restore validated replies and f
 	])
 		assert.ok(!body.includes(omitted), omitted);
 	assert.deepEqual((await api("history?sid=" + sid)).messages.slice(-2), reply.messages);
-	const fallback =
-		"I don’t have verified information on that. Our specialist can clarify.";
-	for (const callback of [
-		() => result({ unknown: true, reply: "", evidence: "" }),
-		() =>
-			result({ unknown: false, reply: "The showroom opens at midnight.", evidence: old }),
-		() => result({ unknown: false, reply: "Unsupported", evidence: "absent" }),
-		() => result({ unknown: "no", reply: 17 }),
-		() => Response.json({}, { status: 429 }),
-		() => {
-			throw new DOMException("timeout", "TimeoutError");
-		},
+	const unsupported = /^I don’t have a verified answer in the Gorbach knowledge base\./;
+	const unavailable = /^I can’t look up a verified answer right now\./;
+	for (const [callback, expected] of [
+		[() => result({ unknown: true, reply: "", evidence: "" }), unsupported],
+		[
+			() =>
+				result({ unknown: false, reply: "The showroom opens at midnight.", evidence: old }),
+			unsupported,
+		],
+		[
+			() => result({ unknown: false, reply: "Unsupported", evidence: "absent" }),
+			unsupported,
+		],
+		[() => result({ unknown: "no", reply: 17 }), unavailable],
+		[() => Response.json({}, { status: 429 }), unavailable],
+		[
+			() => {
+				throw new DOMException("timeout", "TimeoutError");
+			},
+			unavailable,
+		],
 	]) {
+		const another = await api("start", { lang: "en", page: "/" });
 		provider = callback;
-		assert.equal((await msg({ text: "Another question?" })).messages[1].text, fallback);
+		assert.match(
+			(await api("msg", { sid: another.sid, text: "Another question?" })).messages[1].text,
+			expected,
+		);
 	}
 	const n = requests.length;
 	delete process.env.GEMINI_API_KEY;
 	try {
-		assert.equal(
+		assert.match(
 			(await msg({ text: "Missing configuration?" })).messages[1].text,
-			fallback,
+			unavailable,
 		);
 		assert.equal(requests.length, n);
 	} finally {
 		process.env.GEMINI_API_KEY = "test-only";
 	}
-	assert.equal((await api("history?sid=" + sid)).messages.at(-1).text, fallback);
+	assert.match((await api("history?sid=" + sid)).messages.at(-1).text, unavailable);
 });
 test("concurrent provider attempts respect rolling session and IP limits and the daily budget", async () => {
 	process.env.GORBACH_TRUST_PROXY = "true";
@@ -358,25 +376,47 @@ test("concurrent provider attempts respect rolling session and IP limits and the
 			candidates: [
 				{
 					finishReason: "STOP",
-					content: { parts: [{ text: JSON.stringify({ unknown: true }) }] },
+					content: {
+						parts: [
+							{
+								text: JSON.stringify({
+									unknown: false,
+									reply: "Montujeme žaluzie.",
+									evidence: "Montujeme žaluzie.",
+								}),
+							},
+						],
+					},
 				},
 			],
 		});
-	async function burst(session, ip, expected, limit) {
+	async function burst(session, ip, expected, limit, overlapping = false) {
 		sql.exec("DELETE FROM gemini_attempts");
 		const prior = requests.length;
 		const responses = await Promise.all(
 			sids.map((_, i) =>
-				api("msg", { sid: session(i), text: "When do you open?" }, 200, {
-					"x-real-ip": ip(i),
-				}),
+				api(
+					"msg",
+					{ sid: session(i), text: "Montujete žaluzie?" },
+					overlapping ? [200, 409] : 200,
+					{
+						"x-real-ip": ip(i),
+					},
+				),
 			),
 		);
 		assert.equal(requests.length - prior, expected);
-		assert.equal(
-			responses.filter((r) => r.messages[1].text === limit).length,
-			13 - expected,
-		);
+		if (overlapping) {
+			const next = await api("msg", { sid: session(0), text: "Montujete žaluzie?" }, 200, {
+				"x-real-ip": "192.0.2.240",
+			});
+			assert.equal(next.messages.at(-1).text, limit);
+		} else {
+			assert.equal(
+				responses.filter((r) => r.messages[1].text === limit).length,
+				13 - expected,
+			);
+		}
 	}
 	try {
 		await burst(
@@ -384,6 +424,7 @@ test("concurrent provider attempts respect rolling session and IP limits and the
 			(i) => "192.0.2." + (i + 1),
 			12,
 			"Zkuste to prosím později.",
+			true,
 		);
 		await burst(
 			(i) => sids[i],
@@ -477,7 +518,7 @@ test("knowledge answers must match the dialog language and a pinned source line"
 				sid,
 				text: lang === "cs" ? "Montujete žaluzie?" : "Do you install blinds?",
 			})
-		).messages[1].text;
+		).messages[1].text.split("\n\n")[0];
 	};
 	let line = czech;
 	provider = () =>
@@ -491,11 +532,10 @@ test("knowledge answers must match the dialog language and a pinned source line"
 				},
 			],
 		});
-	const fallback =
-		"I don’t have verified information on that. Our specialist can clarify.";
+	const fallback = /^I don’t have a verified answer in the Gorbach knowledge base\./;
 	save();
 	const before = requests.length;
-	assert.equal(await ask("en"), fallback);
+	assert.match(await ask("en"), fallback);
 	assert.equal(requests.length, before);
 	assert.equal(await ask("cs"), czech);
 	sections.push({
@@ -506,7 +546,7 @@ test("knowledge answers must match the dialog language and a pinned source line"
 	});
 	save();
 	const mixed = requests.length;
-	assert.equal(await ask("en"), fallback);
+	assert.match(await ask("en"), fallback);
 	assert.ok(requests.length > mixed);
 	assert.ok(!JSON.stringify(requests.at(-1)).includes(czech));
 	line = english;
@@ -518,7 +558,7 @@ test("knowledge answers must match the dialog language and a pinned source line"
 	for (const invalid of ["en_US", "en-", "fr-CA"]) {
 		sections.at(-1).lang = invalid;
 		save();
-		assert.equal(await ask("en"), fallback);
+		assert.match(await ask("en"), fallback);
 	}
 });
 test("knowledge validation accepts only supported explicit language codes or an omitted language", () => {
@@ -529,6 +569,204 @@ test("knowledge validation accepts only supported explicit language codes or an 
 	for (const lang of ["cs", "en", "de", "ru", "uk"])
 		assert.deepEqual(validate({ ...section, lang }), [{ ...section, lang }]);
 	assert.deepEqual(validate(section), [section]);
+});
+function geminiResult(reply, unknown = false) {
+	return Response.json({
+		candidates: [
+			{
+				finishReason: "STOP",
+				content: { parts: [{ text: JSON.stringify({ reply, evidence: reply, unknown }) }] },
+			},
+		],
+	});
+}
+test("status, start and reset introduce the AI agent and offer three starters in each language", async () => {
+	for (const [lang, identity] of [
+		["cs", /AI asistent/],
+		["en", /AI assistant/],
+		["de", /KI-Assistent/],
+		["ru", /ИИ-ассистент/],
+		["uk", /ШІ-асистент/],
+	]) {
+		const { start: status } = await api("status?lang=" + lang);
+		assert.match(status.greeting, identity);
+		assert.equal(status.chips.length, 3);
+		const first = await api("start", { lang, page: "/" });
+		assert.equal(first.messages[0].text, status.greeting);
+		assert.deepEqual(first.chips, status.chips);
+		const reset = await api("reset", { sid: first.sid });
+		assert.notEqual(reset.sid, first.sid);
+		const history = await api("history?sid=" + reset.sid);
+		assert.deepEqual(history.messages, first.messages);
+		assert.deepEqual(history.chips, status.chips);
+	}
+});
+test("grounded consultation discovers requirements, carries verified context and resets unsupported streak", async () => {
+	sql.exec("DELETE FROM gemini_attempts");
+	const shade = "Exterior blinds regulate sunlight by tilting their slats.";
+	const control = "Exterior blinds can use motorized controls.";
+	addKnowledge(`${shade}\n${control}\nWhat colours are available?`);
+	const { sid } = await api("start", { lang: "en", page: "/" });
+	const msg = (text) => api("msg", { sid, text });
+	provider = () => geminiResult("", true);
+	assert.equal((await msg("What is the cost of a blindfold?")).chips.length, 3);
+	provider = () => geminiResult(shade);
+	const result = await msg("How much sunlight can exterior blinds block?");
+	assert.equal(result.messages[1].text.split("\n\n")[0], shade);
+	assert.match(result.messages[1].text, /What would you like to shade\?/);
+	assert.deepEqual(
+		result.chips.map((chip) => chip.id),
+		["products", "quote", "question"],
+	);
+	provider = () => geminiResult(control);
+	const followUp = await msg("Can they be motorized?");
+	assert.equal(followUp.messages[1].text.split("\n\n")[0], control);
+	const outbound = JSON.parse(requests.at(-1).contents[0].parts[0].text);
+	assert.equal(outbound.previousEvidence, shade);
+	assert.equal(outbound.question, "Can they be motorized?");
+	provider = () => geminiResult(shade);
+	assert.equal(
+		(await msg("How much do exterior blinds block?")).messages[1].text.split("\n\n")[0],
+		shade,
+	);
+	provider = () => geminiResult("What colours are available?");
+	const unsupported = await msg("Do these turn into boats?");
+	assert.deepEqual(
+		unsupported.chips.map((chip) => chip.id),
+		["products", "quote", "specialist"],
+	);
+	const discovery = await api("msg", { sid, chip: "products" });
+	assert.match(discovery.messages[1].text, /windows, a patio/);
+	assert.equal(discovery.chips.length, 3);
+	const requestsBeforeQuote = requests.length;
+	const askQuote = await msg("How much are exterior blinds?");
+	assert.match(askQuote.question, /Which product/);
+	assert.equal(requests.length, requestsBeforeQuote);
+});
+test("two unsupported questions open a restorable handoff and explicit submission creates one manager lead", async () => {
+	sql.exec("DELETE FROM gemini_attempts");
+	addKnowledge("We install exterior blinds.");
+	const { sid } = await api("start", { lang: "en", page: "/" });
+	const msg = (body, status = 200) => api("msg", { sid, ...body }, status);
+	const history = () => api("history?sid=" + sid);
+	const question = "What is the price of Bitcoin?";
+	provider = () => geminiResult("", true);
+	const first = await msg({ text: "Who won the football match?" });
+	assert.deepEqual(
+		first.chips.map((chip) => chip.id),
+		["products", "quote", "specialist"],
+	);
+	assert.deepEqual((await history()).chips, first.chips);
+	provider = () => Response.json({}, { status: 503 });
+	const failure = await msg({ text: "Do you install blinds?" });
+	assert.match(failure.messages[1].text, /can’t look up a verified answer/);
+	assert.equal(
+		sql.prepare("SELECT unsupported_streak FROM dialogs WHERE id=?").get(sid)
+			.unsupported_streak,
+		1,
+	);
+	provider = () => geminiResult("", true);
+	const automatic = await msg({ text: question });
+	assert.match(automatic.question, /What is your name\?/);
+	assert.equal((await history()).question, automatic.question);
+	assert.deepEqual((await api("submit", { sid }, 400)).missing, ["name", "contact"]);
+	const calls = requests.length;
+	await msg({ text: "Can I ask about installation instead?" }, 400);
+	assert.equal((await msg({ text: "Marie Černá" })).input, "phone");
+	assert.equal((await history()).input, "phone");
+	assert.equal((await msg({ text: "not-a-contact" }, 400)).error, "invalid_contact");
+	assert.deepEqual((await api("submit", { sid }, 400)).missing, ["contact"]);
+	const review = await msg({ text: "marie@example.org" });
+	assert.deepEqual(review.review, {
+		purpose: "handoff",
+		products: [],
+		name: "Marie Černá",
+		email: "marie@example.org",
+	});
+	assert.deepEqual((await history()).review, review.review);
+	assert.equal(requests.length, calls);
+	assert.equal(
+		sql.prepare("SELECT COUNT(*) AS n FROM leads WHERE dialog=?").get(sid).n,
+		0,
+	);
+	const [lead, duplicate] = await Promise.all([
+		api("submit", { sid }),
+		api("submit", { sid }),
+	]);
+	assert.ok(lead.lead_id);
+	assert.deepEqual(lead, duplicate);
+	const submitted = await history();
+	assert.equal(submitted.lead_id, lead.lead_id);
+	assert.equal(submitted.review, null);
+	assert.equal((await msg({ text: "Another question" }, 409)).error, "submitted");
+	const stored = sql.prepare("SELECT * FROM leads WHERE dialog=?").get(sid);
+	assert.equal(stored.kind, "question");
+	assert.equal(stored.product, "");
+	assert.match(stored.summary, /price of Bitcoin/);
+	assert.equal(JSON.parse(stored.fields).question, question);
+	const token = randomUUID();
+	sql.prepare("INSERT INTO staff VALUES(?,?,?)").run("handoff-test", "unused", "unused");
+	sql
+		.prepare("INSERT INTO sessions VALUES(?,?,?)")
+		.run(
+			createHash("sha256").update(token).digest("hex"),
+			"handoff-test",
+			Date.now() + 60000,
+		);
+	const admin = await fetch(origin + "/admin?section=leads&kind=question", {
+		headers: { cookie: "gz_admin=" + token },
+	});
+	assert.equal(admin.status, 200);
+	const html = await admin.text();
+	for (const expected of [
+		lead.lead_id,
+		question,
+		"Who won the football match?",
+		"marie@example.org",
+	])
+		assert.ok(html.includes(expected));
+});
+test("specialist choice can be declined and a stale model reply cannot replace the current screen", async () => {
+	sql.exec("DELETE FROM gemini_attempts");
+	addKnowledge("We install exterior blinds.");
+	const { sid } = await api("start", { lang: "en", page: "/" });
+	const msg = (body, status = 200) => api("msg", { sid, ...body }, status);
+	provider = () => geminiResult("", true);
+	await msg({ text: "Can these be painted an unlisted colour?" });
+	const { promise: requested, resolve: markRequested } = Promise.withResolvers();
+	const { promise: answer, resolve: giveAnswer } = Promise.withResolvers();
+	provider = () => {
+		markRequested();
+		return answer;
+	};
+	const stale = msg({ text: "Do you install shutters on boats?" }, 409);
+	await Promise.race([
+		requested,
+		stale.then(() => assert.fail("Expected in-flight model request")),
+	]);
+	try {
+		assert.match((await msg({ chip: "specialist" })).question, /What is your name\?/);
+		await msg({ text: "Mária" });
+		const review = await msg({ text: "+420 123 456 789" });
+		assert.equal(review.review.phone, "+420 123 456 789");
+	} finally {
+		giveAnswer(geminiResult("", true));
+	}
+	assert.equal((await stale).error, "conversation_changed");
+	assert.equal((await api("history?sid=" + sid)).review.purpose, "handoff");
+	const decline = await msg({ chip: "decline_handoff" });
+	assert.match(decline.messages[1].text, /help you choose shading/);
+	const history = await api("history?sid=" + sid);
+	assert.deepEqual(history.chips, decline.chips);
+	assert.equal(history.review, null);
+	await api("submit", { sid }, 400);
+	provider = () => geminiResult("", true);
+	const again = await msg({ text: "What is the weather?" });
+	assert.equal(again.chips.length, 3);
+	assert.equal(
+		JSON.parse(requests.at(-1).contents[0].parts[0].text).previousEvidence,
+		undefined,
+	);
 });
 test("unavailable service restores localized starter choices and accepts either in the same dialog", async () => {
 	const fixture = readFileSync(
@@ -541,15 +779,10 @@ test("unavailable service restores localized starter choices and accepts either 
 		)
 		.run(fixture);
 	for (const [lang, action, expectedReply] of [
-		["en", "question", "Please enter your question."],
+		["en", "question", "What would you like to know about Gorbach shading?"],
 		["de", "quote", "Für welches Produkt interessieren Sie sich?"],
 	]) {
-		const { sid, chips } = await api("start", { lang, page: "/" });
-		const alternatives = chips.filter((chip) => chip.id !== "service");
-		assert.deepEqual(
-			alternatives.map((chip) => chip.id),
-			["quote", "question"],
-		);
+		const { sid } = await api("start", { lang, page: "/" });
 		const unavailable = await api("msg", { sid, chip: "service" });
 		assert.equal(
 			unavailable.question,
@@ -557,7 +790,11 @@ test("unavailable service restores localized starter choices and accepts either 
 				? "Service intake is currently unavailable."
 				: "Serviceanfragen können derzeit nicht aufgenommen werden.",
 		);
-		assert.deepEqual(unavailable.chips, alternatives);
+		const alternatives = unavailable.chips;
+		assert.deepEqual(
+			alternatives.map((chip) => chip.id),
+			["products", "quote", "question"],
+		);
 		const history = await api("history?sid=" + sid);
 		assert.deepEqual(history.chips, alternatives);
 		assert.equal(history.messages.at(-1).text, unavailable.question);

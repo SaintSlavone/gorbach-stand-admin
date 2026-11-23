@@ -1,7 +1,14 @@
 import { readUpload, storeUpload } from "./file-upload";
 import { writeTransaction, expiryCutoff } from "./attachments";
 import { clientBucket, reserveGeminiAttempt } from "./gemini-quota";
-import { knowledgeAnswer, questionPrompt } from "./knowledge-answer";
+import { knowledgeAnswer } from "./knowledge-answer";
+import {
+	answerHandoff,
+	beginHandoff,
+	getHandoff,
+	handoffScreen,
+	submitHandoff,
+} from "./handoff";
 import {
 	ApiError,
 	attachmentContext,
@@ -13,13 +20,20 @@ import {
 import { randomBytes } from "node:crypto";
 import { db } from "./admin";
 
-import { copy, language, startCopy } from "./chat-copy";
+import {
+	consultation,
+	consultationChips,
+	copy,
+	language,
+	startCopy,
+	type Language,
+} from "./chat-copy";
 
 function validateSid(sid: unknown): asserts sid is string {
 	if (typeof sid !== "string" || !/^[a-f0-9]{48}$/.test(sid))
 		throw new ApiError(400, "invalid_sid");
 }
-function start(lang: keyof typeof copy, page: string, utm: string) {
+function start(lang: Language, page: string, utm: string) {
 	const sid = randomBytes(24).toString("hex");
 	const { greeting, chips } = startCopy(lang);
 	db()
@@ -40,6 +54,43 @@ const generalScreen = {
 	review: null,
 	pending: false,
 };
+const unsupportedLimit = 2;
+
+function lastMessageId(sid: string) {
+	return db().prepare("SELECT MAX(id) AS id FROM messages WHERE dialog=?").get(sid)?.id;
+}
+
+function lastChoices(sid: string): { id: string; label: string }[] {
+	const row = db()
+		.prepare(
+			"SELECT chips FROM messages WHERE dialog=? AND role='bot' ORDER BY id DESC LIMIT 1",
+		)
+		.get(sid);
+	return JSON.parse(String(row?.chips ?? "[]"));
+}
+
+function isQuoteRequest(value: string, lang: Language) {
+	const normalized = value
+		.toLowerCase()
+		.replace(/[?!.]+$/u, "")
+		.trim();
+	if (normalized === copy[lang][2].toLowerCase()) return true;
+	if (
+		/^(?:price|cost|quote|preis|cena|cenu|kolik stojí|сколько стоит|ціна|вартість|how much(?: is it| are they| does it cost)?|what (?:is|are) (?:the|your) (?:price|cost)s?|was kostet (?:das|es)|сколько это стоит|скільки (?:це )?коштує)$/iu.test(
+			normalized,
+		)
+	)
+		return true;
+	const price =
+		/(?<![\p{L}\p{M}\p{N}_])(?:prices?|costs?|quotes?|preise?|koste[tn]|cena|cenu|kolik stojí|сколько сто(?:ит|ят)|цена|стоимость|ціна|вартість|скільки кошту(?:є|ють))(?![\p{L}\p{M}\p{N}_])/iu;
+	const englishPrice =
+		/^how much (?:is|are) (?:(?:an?|the|your|those|some) )?(?:(?:exterior|outdoor|interior|indoor|roller|window|motorized|motorised|retractable|aluminum|aluminium|solar|custom|electric|manual) ){0,3}(?:blinds?|shades?|shading|awnings?|shutters?|pergolas?|insect screens?|roller screens?)$/iu;
+	const product =
+		/(?<![\p{L}\p{M}\p{N}_])(?:gorbach|blinds?|shades?|shading|awnings?|shutters?|insect screens?|roller screens?)(?![\p{L}\p{M}\p{N}_])|(?:žaluzi|rolet|pergol|markýz|stíněn|purenit|jalousi|rolllad|rollo|markise|sonnenschutz|fliegengitter|жалюз|маркиз|маркіз|рольстав|сонцезахист|москитн|москітн|затінен|солнцезащит|пуренит|пуреніт|пергол|штор)/iu;
+	return (
+		englishPrice.test(normalized) || (price.test(normalized) && product.test(normalized))
+	);
+}
 function saveExchange(
 	sid: string,
 	visitor: string,
@@ -109,7 +160,11 @@ async function dispatch(req: Request, route: Endpoint) {
 	if (route === "history") {
 		const rows = db()
 			.prepare(
-				"SELECT m.role,m.body AS text,m.chips,q.screen,q.version,d.lang,l.id AS lead_id FROM dialogs d LEFT JOIN leads l ON l.dialog=d.id LEFT JOIN quote_sessions q ON q.dialog=d.id LEFT JOIN messages m ON m.dialog=d.id WHERE d.id=? ORDER BY m.id",
+				`SELECT m.role,m.body AS text,m.chips,q.screen,q.version,d.lang,l.id AS lead_id,
+				 h.question AS handoff_question,h.name AS handoff_name,h.contact AS handoff_contact
+				 FROM dialogs d LEFT JOIN leads l ON l.dialog=d.id LEFT JOIN quote_sessions q ON q.dialog=d.id
+				 LEFT JOIN handoff_sessions h ON h.dialog=d.id LEFT JOIN messages m ON m.dialog=d.id
+				 WHERE d.id=? ORDER BY m.id`,
 			)
 			.all(sid);
 		if (!rows.length) throw new ApiError(404, "unknown_session");
@@ -125,6 +180,19 @@ async function dispatch(req: Request, route: Endpoint) {
 				progress: null,
 				multi: false,
 				pending: false,
+			};
+		const { handoff_question, handoff_name, handoff_contact } = rows[0];
+		if (typeof handoff_question === "string")
+			return {
+				messages,
+				...handoffScreen(
+					{
+						question: handoff_question,
+						name: String(handoff_name),
+						contact: String(handoff_contact),
+					},
+					language(rows[0].lang),
+				),
 			};
 		const screen = JSON.parse(String(rows[0].screen ?? "{}"));
 		if (screen.review) {
@@ -148,6 +216,7 @@ async function dispatch(req: Request, route: Endpoint) {
 					.all(sid, context.instance, expiryCutoff())
 			: [];
 		return {
+			...generalScreen,
 			messages,
 			chips: JSON.parse(String(rows.at(-1)?.chips ?? "[]")),
 			...screen,
@@ -157,35 +226,55 @@ async function dispatch(req: Request, route: Endpoint) {
 	}
 	const turn = writeTransaction(db(), () => {
 		const dialog = db()
-			.prepare("SELECT lang,page,utm,knowledge_version FROM dialogs WHERE id=?")
+			.prepare(
+				"SELECT lang,page,utm,knowledge_version,consultation_evidence FROM dialogs WHERE id=?",
+			)
 			.get(sid);
 		if (!dialog) throw new ApiError(404, "unknown_session");
 		const lang = language(dialog.lang);
 		if (route === "reset")
 			return { sid: start(lang, String(dialog.page), String(dialog.utm)).sid };
-		if (route === "submit") return submitLead(sid);
+		const lead = db().prepare("SELECT id FROM leads WHERE dialog=?").get(sid);
+		const handoff = getHandoff(sid);
+		if (route === "submit") {
+			if (lead) return { lead_id: lead.id };
+			return handoff ? submitHandoff(sid, handoff) : submitLead(sid);
+		}
+		if (lead) throw new ApiError(409, "submitted");
 		const input = readInput(body);
 		const value = input.values.join(", ");
+		const choices = input.kind === "text" ? [] : lastChoices(sid);
+		const visitorText = input.values
+			.map((id) => choices.find((c) => c.id === id)?.label ?? id)
+			.join(", ");
+		if (handoff) {
+			const next = answerHandoff(sid, handoff, input);
+			const screen = next
+				? handoffScreen(next, lang)
+				: {
+						...generalScreen,
+						chips: consultationChips(lang, false),
+					};
+			const reply =
+				"question" in screen ? String(screen.question) : consultation[lang].discover;
+			return { messages: saveExchange(sid, visitorText, reply, screen.chips), ...screen };
+		}
 		const quoteRequested =
-			input.kind !== "chips" &&
-			(["quote", copy[lang][2].toLowerCase()].includes(value.toLowerCase()) ||
-				(input.kind === "text" &&
-					/(?:(?<![\p{L}\p{M}\p{N}_])(?:price|cost|quote|preis|cena|cenu|kolik stojí)(?![\p{L}\p{M}\p{N}_])|сколько стоит|ціна|вартість)/iu.test(
-						value,
-					)));
+			(input.kind === "chip" && value === "quote") ||
+			(input.kind === "text" && isQuoteRequest(value, lang));
 		const requested = quoteRequested
 			? "quote"
 			: input.kind === "chip" && value === "service"
 				? "service"
 				: null;
 		const survey = questionnaireTurn(sid, input, requested, lang);
-		if (
-			!survey &&
-			input.kind !== "text" &&
-			!(input.kind === "chip" && ["service", "question"].includes(value))
-		)
-			throw new ApiError(400, "invalid_chip");
-		if (!survey && input.kind === "text") {
+		if (survey)
+			return {
+				messages: saveExchange(sid, visitorText, survey.question, survey.chips),
+				...survey,
+			};
+		if (input.files) throw new ApiError(400, "invalid_attachment");
+		if (input.kind === "text") {
 			const revision = db()
 				.prepare("SELECT content FROM revisions WHERE id=? AND kind='knowledge'")
 				.get(dialog.knowledge_version);
@@ -193,6 +282,8 @@ async function dispatch(req: Request, route: Endpoint) {
 				general: {
 					text: value,
 					lang,
+					lastMessage: lastMessageId(sid),
+					previousEvidence: String(dialog.consultation_evidence),
 					attachmentCount: Number(
 						db()
 							.prepare("SELECT count(*) AS n FROM files WHERE dialog=? AND created>?")
@@ -202,40 +293,74 @@ async function dispatch(req: Request, route: Endpoint) {
 				},
 			};
 		}
-		const screen = survey ?? generalScreen;
-		let visitorText = value;
-		if (input.kind !== "text") {
-			const last = db()
+		if (
+			input.kind === "chip" &&
+			value === "specialist" &&
+			choices.some((c) => c.id === value)
+		) {
+			const lastVisitor = db()
 				.prepare(
-					"SELECT chips FROM messages WHERE dialog=? AND role='bot' ORDER BY id DESC LIMIT 1",
+					"SELECT body FROM messages WHERE dialog=? AND role='visitor' ORDER BY id DESC LIMIT 1",
 				)
-				.get(sid);
-			const choices: { id: string; label: string }[] = JSON.parse(
-				String(last?.chips ?? "[]"),
-			);
-			visitorText = input.values
-				.map((id) => choices.find((c) => c.id === id)?.label ?? id)
-				.join(", ");
+				.get(sid)!;
+			const screen = handoffScreen(beginHandoff(sid, String(lastVisitor.body)), lang);
+			return {
+				messages: saveExchange(sid, visitorText, screen.question, screen.chips),
+				...screen,
+			};
 		}
+		if (input.kind !== "chip" || !["products", "question"].includes(value))
+			throw new ApiError(400, "invalid_chip");
+		const screen = { ...generalScreen, chips: consultationChips(lang, false) };
 		const reply =
-			survey?.question ??
-			(input.kind === "chip" && value === "question" ? questionPrompt(lang) : copy[lang][5]);
+			value === "products" ? consultation[lang].discover : consultation[lang].ask;
 		return { messages: saveExchange(sid, visitorText, reply, screen.chips), ...screen };
 	});
 	if (!("general" in turn) || !turn.general) return turn;
-	const { text, lang, content, attachmentCount } = turn.general;
+	const { text, lang, content, attachmentCount, lastMessage, previousEvidence } =
+		turn.general;
 	const ip = clientBucket(req);
-	const answer = await knowledgeAnswer(text, lang, content, attachmentCount, () =>
-		writeTransaction(db(), () => reserveGeminiAttempt(sid, ip)),
+	const answer = await knowledgeAnswer(
+		text,
+		lang,
+		content,
+		attachmentCount,
+		() => writeTransaction(db(), () => reserveGeminiAttempt(sid, ip)),
+		previousEvidence,
 	);
 	return writeTransaction(db(), () => {
-		if (!db().prepare("SELECT 1 FROM dialogs WHERE id=?").get(sid))
-			throw new ApiError(404, "unknown_session");
-		if (db().prepare("SELECT 1 FROM quote_sessions WHERE dialog=?").get(sid))
-			throw new ApiError(409, "conversation_changed");
+		const sql = db();
+		const dialog = sql
+			.prepare("SELECT unsupported_streak FROM dialogs WHERE id=?")
+			.get(sid);
+		if (!dialog) throw new ApiError(404, "unknown_session");
+		if (lastMessage !== lastMessageId(sid)) throw new ApiError(409, "conversation_changed");
+		const labels = consultation[lang];
+		if (answer.outcome === "unsupported" || answer.outcome === "answered") {
+			const streak =
+				answer.outcome === "unsupported" ? Number(dialog.unsupported_streak) + 1 : 0;
+			if (streak >= unsupportedLimit) {
+				const screen = handoffScreen(beginHandoff(sid, text), lang);
+				return {
+					messages: saveExchange(sid, text, screen.question, screen.chips, true),
+					...screen,
+				};
+			}
+			sql
+				.prepare("UPDATE dialogs SET unsupported_streak=?,consultation_evidence=? WHERE id=?")
+				.run(streak, answer.outcome === "answered" ? answer.text : "", sid);
+		}
+		const chips = consultationChips(lang, answer.outcome !== "answered");
+		const reply =
+			answer.outcome === "answered"
+				? answer.text + "\n\n" + labels.next
+				: answer.outcome === "limited"
+					? answer.text
+					: labels[answer.outcome];
 		return {
-			messages: saveExchange(sid, text, answer.text, [], answer.unknown),
 			...generalScreen,
+			chips,
+			messages: saveExchange(sid, text, reply, chips, answer.outcome === "unsupported"),
 		};
 	});
 }

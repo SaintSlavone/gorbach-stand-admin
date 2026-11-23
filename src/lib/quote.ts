@@ -1,5 +1,5 @@
 import { expiryCutoff } from "./attachments";
-import { startCopy } from "./chat-copy";
+import { consultationChips } from "./chat-copy";
 import { db } from "./admin";
 
 export class ApiError extends Error {
@@ -11,7 +11,7 @@ export class ApiError extends Error {
 		super(key);
 	}
 }
-const prompts = {
+export const prompts = {
 	cs: {
 		service: "Jakou službu potřebujete?",
 		unavailable: "Příjem servisních požadavků momentálně není dostupný.",
@@ -165,6 +165,11 @@ function pending(item: Item, product: Product) {
 const email = (s: string) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(s);
 const phone = (s: string) =>
 	/^\+?[\d ()-]+$/.test(s) && /^\d{7,15}$/.test(s.replace(/\D/g, ""));
+export function contactDetails(value: string) {
+	if (email(value)) return { email: value };
+	if (phone(value)) return { phone: value };
+	return null;
+}
 function selectedProduct(state: State) {
 	return state.intake === "service" ? "" : (state.items[0]?.product ?? "");
 }
@@ -173,7 +178,7 @@ function review(state: State) {
 		...(state.intake === "service" ? { serviceKind: state.items[0]?.product } : {}),
 		products: state.items,
 		name: state.name,
-		...(email(state.contact) ? { email: state.contact } : { phone: state.contact }),
+		...contactDetails(state.contact),
 	};
 }
 export function labelReview(
@@ -339,8 +344,7 @@ function answer(state: State, catalog: Catalog, input: Input, sid: string) {
 		return;
 	}
 	if (!state.contact) {
-		if (kind !== "text" || !(email(v) || phone(v)))
-			throw new ApiError(400, "invalid_contact");
+		if (kind !== "text" || !contactDetails(v)) throw new ApiError(400, "invalid_contact");
 		state.contact = v;
 		return;
 	}
@@ -434,7 +438,7 @@ export function questionnaireTurn(
 		if (service)
 			return {
 				question: prompts[lang].unavailable,
-				chips: startCopy(lang).chips.filter((chip) => chip.id !== "service"),
+				chips: consultationChips(lang, false),
 				review: null,
 				progress: null,
 				input: "text",
@@ -513,10 +517,36 @@ export function submitLead(sid: string) {
 				missing.push(f.id);
 	}
 	if (!state.name.trim()) missing.push("name");
-	if (!(email(state.contact) || phone(state.contact))) missing.push("contact");
+	if (!contactDetails(state.contact)) missing.push("contact");
 	if (missing.length) throw new ApiError(400, "incomplete", missing);
 	const summary = view(state, catalog).review;
 	if (!summary) throw new ApiError(400, "incomplete", ["review"]);
+	const titles = state.items.map((i) => catalog[i.product].title?.cs ?? i.product);
+	const contact = state.name + " · " + state.contact;
+	return createLead(sid, {
+		kind: state.intake === "service" ? state.items[0].product : "quote",
+		product: selectedProduct(state),
+		contact,
+		summary:
+			(state.intake === "service" ? "Servisní požadavek: " : "Poptávka: ") +
+			titles.join(", ") +
+			" · " +
+			contact,
+		fields: summary,
+	});
+}
+
+export function createLead(
+	sid: string,
+	lead: {
+		kind: string;
+		product: string;
+		contact: string;
+		summary: string;
+		fields: object;
+	},
+) {
+	const sql = db();
 	const now = new Date();
 	const date = new Intl.DateTimeFormat("sv-SE", { timeZone: "Europe/Prague" })
 		.format(now)
@@ -527,8 +557,6 @@ export function submitLead(sid: string) {
 		)
 		.get(date)!;
 	const id = "GZ-" + date + "-" + String(seq.n).padStart(3, "0");
-	const titles = state.items.map((i) => catalog[i.product].title?.cs ?? i.product);
-	const contact = state.name + " · " + state.contact;
 	sql
 		.prepare(
 			"INSERT INTO leads(id,dialog,kind,product,created,contact,summary,fields) VALUES(?,?,?,?,?,?,?,?)",
@@ -536,15 +564,12 @@ export function submitLead(sid: string) {
 		.run(
 			id,
 			sid,
-			state.intake === "service" ? state.items[0].product : "quote",
-			selectedProduct(state),
+			lead.kind,
+			lead.product,
 			now.toISOString(),
-			contact,
-			(state.intake === "service" ? "Servisní požadavek: " : "Poptávka: ") +
-				titles.join(", ") +
-				" · " +
-				contact,
-			JSON.stringify(summary),
+			lead.contact,
+			lead.summary,
+			JSON.stringify(lead.fields),
 		);
 	return { lead_id: id };
 }

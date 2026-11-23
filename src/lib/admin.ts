@@ -20,19 +20,27 @@ export function db() {
  CREATE TABLE IF NOT EXISTS messages(id INTEGER PRIMARY KEY,dialog TEXT REFERENCES dialogs(id) ON DELETE CASCADE,role TEXT NOT NULL,body TEXT NOT NULL,unknown INTEGER DEFAULT 0,cost REAL DEFAULT 0);
  CREATE TABLE IF NOT EXISTS leads(id TEXT PRIMARY KEY,dialog TEXT UNIQUE NOT NULL REFERENCES dialogs(id) ON DELETE CASCADE,kind TEXT NOT NULL,product TEXT NOT NULL,status TEXT NOT NULL DEFAULT 'Nová',created TEXT NOT NULL,contact TEXT NOT NULL,summary TEXT NOT NULL,fields TEXT DEFAULT '{}',delivery TEXT DEFAULT '');
  CREATE TABLE IF NOT EXISTS quote_sessions(dialog TEXT PRIMARY KEY REFERENCES dialogs(id) ON DELETE CASCADE,version INTEGER NOT NULL REFERENCES revisions(id),state TEXT NOT NULL,screen TEXT NOT NULL);
+ CREATE TABLE IF NOT EXISTS handoff_sessions(dialog TEXT PRIMARY KEY REFERENCES dialogs(id) ON DELETE CASCADE,question TEXT NOT NULL,name TEXT NOT NULL DEFAULT '',contact TEXT NOT NULL DEFAULT '');
  CREATE TABLE IF NOT EXISTS gemini_attempts(day TEXT NOT NULL,time INTEGER NOT NULL,sid TEXT NOT NULL,ip TEXT NOT NULL);
  CREATE TABLE IF NOT EXISTS lead_sequence(day TEXT PRIMARY KEY,n INTEGER NOT NULL);
  CREATE TABLE IF NOT EXISTS files(id TEXT PRIMARY KEY,dialog TEXT NOT NULL REFERENCES dialogs(id) ON DELETE CASCADE,name TEXT NOT NULL,bytes BLOB NOT NULL);`);
 	database.exec("PRAGMA busy_timeout=5000; BEGIN IMMEDIATE");
 	try {
 		ensureRevisionSchema(database);
-		if (
-			!database
+		const dialogColumns = new Set(
+			database
 				.prepare("PRAGMA table_info(dialogs)")
 				.all()
-				.some((c) => c.name === "utm")
-		)
-			database.exec("ALTER TABLE dialogs ADD COLUMN utm TEXT NOT NULL DEFAULT '{}'");
+				.map((c) => c.name),
+		);
+		for (const [name, definition] of [
+			["utm", "TEXT NOT NULL DEFAULT '{}'"],
+			["unsupported_streak", "INTEGER NOT NULL DEFAULT 0"],
+			["consultation_evidence", "TEXT NOT NULL DEFAULT ''"],
+		]) {
+			if (!dialogColumns.has(name))
+				database.exec(`ALTER TABLE dialogs ADD COLUMN ${name} ${definition}`);
+		}
 		if (
 			!database
 				.prepare("PRAGMA table_info(messages)")
