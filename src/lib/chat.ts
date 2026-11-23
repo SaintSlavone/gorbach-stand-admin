@@ -2,6 +2,7 @@ import { readUpload, storeUpload } from "./file-upload";
 import { writeTransaction, expiryCutoff } from "./attachments";
 import { clientBucket, reserveGeminiAttempt } from "./gemini-quota";
 import { knowledgeAnswer } from "./knowledge-answer";
+import { detectVisitorLanguage, languageRequest } from "./chat-language";
 import {
 	answerHandoff,
 	beginHandoff,
@@ -227,7 +228,9 @@ async function dispatch(req: Request, route: Endpoint) {
 	const turn = writeTransaction(db(), () => {
 		const dialog = db()
 			.prepare(
-				"SELECT lang,page,utm,knowledge_version,consultation_evidence FROM dialogs WHERE id=?",
+				`SELECT lang,page,utm,knowledge_version,consultation_evidence,
+				 EXISTS(SELECT 1 FROM quote_sessions WHERE dialog=dialogs.id) AS in_survey
+				 FROM dialogs WHERE id=?`,
 			)
 			.get(sid);
 		if (!dialog) throw new ApiError(404, "unknown_session");
@@ -259,20 +262,45 @@ async function dispatch(req: Request, route: Endpoint) {
 				"question" in screen ? String(screen.question) : consultation[lang].discover;
 			return { messages: saveExchange(sid, visitorText, reply, screen.chips), ...screen };
 		}
+		const freeText = input.kind === "text" && !input.files && !dialog.in_survey;
+		const requestedLanguage = freeText ? languageRequest(value) : undefined;
+		if (requestedLanguage) {
+			const screen = {
+				...generalScreen,
+				chips: consultationChips(requestedLanguage, false),
+			};
+			db()
+				.prepare("UPDATE dialogs SET lang=?,unsupported_streak=0 WHERE id=?")
+				.run(requestedLanguage, sid);
+			return {
+				messages: saveExchange(
+					sid,
+					visitorText,
+					consultation[requestedLanguage].languageHelp,
+					screen.chips,
+				),
+				...screen,
+			};
+		}
+		const detectedLanguage = freeText ? detectVisitorLanguage(value) : undefined;
+		const turnLanguage = detectedLanguage ?? lang;
 		const quoteRequested =
 			(input.kind === "chip" && value === "quote") ||
-			(input.kind === "text" && isQuoteRequest(value, lang));
+			(input.kind === "text" && isQuoteRequest(value, turnLanguage));
 		const requested = quoteRequested
 			? "quote"
 			: input.kind === "chip" && value === "service"
 				? "service"
 				: null;
-		const survey = questionnaireTurn(sid, input, requested, lang);
-		if (survey)
+		const survey = questionnaireTurn(sid, input, requested, turnLanguage);
+		if (survey) {
+			if (turnLanguage !== lang)
+				db().prepare("UPDATE dialogs SET lang=? WHERE id=?").run(turnLanguage, sid);
 			return {
 				messages: saveExchange(sid, visitorText, survey.question, survey.chips),
 				...survey,
 			};
+		}
 		if (input.files) throw new ApiError(400, "invalid_attachment");
 		if (input.kind === "text") {
 			const revision = db()
@@ -282,6 +310,7 @@ async function dispatch(req: Request, route: Endpoint) {
 				general: {
 					text: value,
 					lang,
+					detectedLanguage,
 					lastMessage: lastMessageId(sid),
 					previousEvidence: String(dialog.consultation_evidence),
 					attachmentCount: Number(
@@ -317,12 +346,20 @@ async function dispatch(req: Request, route: Endpoint) {
 		return { messages: saveExchange(sid, visitorText, reply, screen.chips), ...screen };
 	});
 	if (!("general" in turn) || !turn.general) return turn;
-	const { text, lang, content, attachmentCount, lastMessage, previousEvidence } =
-		turn.general;
+	const {
+		text,
+		lang,
+		detectedLanguage,
+		content,
+		attachmentCount,
+		lastMessage,
+		previousEvidence,
+	} = turn.general;
 	const ip = clientBucket(req);
 	const answer = await knowledgeAnswer(
 		text,
 		lang,
+		detectedLanguage,
 		content,
 		attachmentCount,
 		() => writeTransaction(db(), () => reserveGeminiAttempt(sid, ip)),
@@ -335,12 +372,15 @@ async function dispatch(req: Request, route: Endpoint) {
 			.get(sid);
 		if (!dialog) throw new ApiError(404, "unknown_session");
 		if (lastMessage !== lastMessageId(sid)) throw new ApiError(409, "conversation_changed");
-		const labels = consultation[lang];
+		const responseLanguage = answer.lang;
+		if (responseLanguage !== lang)
+			sql.prepare("UPDATE dialogs SET lang=? WHERE id=?").run(responseLanguage, sid);
+		const labels = consultation[responseLanguage];
 		if (answer.outcome === "unsupported" || answer.outcome === "answered") {
 			const streak =
 				answer.outcome === "unsupported" ? Number(dialog.unsupported_streak) + 1 : 0;
 			if (streak >= unsupportedLimit) {
-				const screen = handoffScreen(beginHandoff(sid, text), lang);
+				const screen = handoffScreen(beginHandoff(sid, text), responseLanguage);
 				return {
 					messages: saveExchange(sid, text, screen.question, screen.chips, true),
 					...screen,
@@ -348,9 +388,9 @@ async function dispatch(req: Request, route: Endpoint) {
 			}
 			sql
 				.prepare("UPDATE dialogs SET unsupported_streak=?,consultation_evidence=? WHERE id=?")
-				.run(streak, answer.outcome === "answered" ? answer.text : "", sid);
+				.run(streak, answer.outcome === "answered" ? answer.evidence : "", sid);
 		}
-		const chips = consultationChips(lang, answer.outcome !== "answered");
+		const chips = consultationChips(responseLanguage, answer.outcome !== "answered");
 		const reply =
 			answer.outcome === "answered"
 				? answer.text + "\n\n" + labels.next

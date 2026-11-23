@@ -159,7 +159,7 @@ test("localized price phrases open product selection and ordinary text stays in 
 			["products", "quote", "specialist"],
 			text,
 		);
-		assert.match(result.messages.at(-1).text, /stínění/);
+		assert.match(result.messages.at(-1).text, /ověřenou odpověď/i);
 	}
 });
 test("review labels and answers use the pinned survey after a newer revision is saved", async () => {
@@ -497,7 +497,7 @@ test("self-introduction filtering preserves ordinary interests and subsequent qu
 		} else assert.equal(outgoing, expected);
 	}
 });
-test("knowledge answers must match the dialog language and a pinned source line", async () => {
+test("knowledge replies require an exact pinned source line and verified cross-language translation", async () => {
 	sql.exec("DELETE FROM gemini_attempts");
 	const czech = "Montujeme venkovní žaluzie.",
 		english = "We install outdoor blinds.";
@@ -520,24 +520,37 @@ test("knowledge answers must match the dialog language and a pinned source line"
 			})
 		).messages[1].text.split("\n\n")[0];
 	};
-	let line = czech;
-	provider = () =>
-		Response.json({
-			candidates: [
-				{
-					finishReason: "STOP",
-					content: {
-						parts: [{ text: JSON.stringify({ unknown: false, reply: line, evidence: line }) }],
-					},
-				},
-			],
-		});
 	const fallback = /^I don’t have a verified answer in the Gorbach knowledge base\./;
 	save();
+	provider = () => geminiResult(czech);
 	const before = requests.length;
 	assert.match(await ask("en"), fallback);
-	assert.equal(requests.length, before);
+	assert.equal(requests.length, before + 2);
 	assert.equal(await ask("cs"), czech);
+	provider = () => {
+		const request = requests.at(-1);
+		const data = JSON.parse(request.contents[0].parts[0].text);
+		if (request.generationConfig.responseSchema.properties.faithful) {
+			assert.deepEqual(data, {
+				evidence: czech,
+				sourceLanguage: "cs",
+				reply: english,
+				targetLanguage: "en",
+			});
+			return geminiResponse({ faithful: true });
+		}
+		assert.deepEqual(
+			data.sections.map((section) => section.language),
+			["cs"],
+		);
+		return geminiResult(english, false, "en", czech);
+	};
+	assert.equal(await ask("en"), english);
+	provider = () =>
+		requests.at(-1).generationConfig.responseSchema.properties.faithful
+			? geminiResponse({ faithful: false })
+			: geminiResult(english + " They include a free motor.", false, "en", czech);
+	assert.match(await ask("en"), fallback);
 	sections.push({
 		id: "installation",
 		lang: "en-US",
@@ -545,17 +558,16 @@ test("knowledge answers must match the dialog language and a pinned source line"
 		text: english,
 	});
 	save();
-	const mixed = requests.length;
-	assert.match(await ask("en"), fallback);
-	assert.ok(requests.length > mixed);
-	assert.ok(!JSON.stringify(requests.at(-1)).includes(czech));
-	line = english;
+	provider = () => geminiResult(english);
+	const sameLanguage = requests.length;
 	assert.equal(await ask("en"), english);
+	assert.equal(requests.length, sameLanguage + 1);
 	assert.ok(!JSON.stringify(requests.at(-1)).includes("Malformed source."));
 	sections.at(-1).lang = "EN";
 	save();
 	assert.equal(await ask("en"), english);
 	for (const invalid of ["en_US", "en-", "fr-CA"]) {
+		sql.exec("DELETE FROM gemini_attempts");
 		sections.at(-1).lang = invalid;
 		save();
 		assert.match(await ask("en"), fallback);
@@ -570,16 +582,117 @@ test("knowledge validation accepts only supported explicit language codes or an 
 		assert.deepEqual(validate({ ...section, lang }), [{ ...section, lang }]);
 	assert.deepEqual(validate(section), [section]);
 });
-function geminiResult(reply, unknown = false) {
+function geminiResponse(result) {
 	return Response.json({
 		candidates: [
 			{
 				finishReason: "STOP",
-				content: { parts: [{ text: JSON.stringify({ reply, evidence: reply, unknown }) }] },
+				content: { parts: [{ text: JSON.stringify(result) }] },
 			},
 		],
 	});
 }
+function geminiResult(reply, unknown = false, language, evidence = reply) {
+	return geminiResponse({ reply, evidence, unknown, language });
+}
+test("Czech page handles an offline English capability question and persists language until a clear switch", async () => {
+	sql.exec("DELETE FROM gemini_attempts");
+	const czech = "Montujeme venkovní žaluzie.";
+	const english = "We install exterior blinds.";
+	addKnowledge(czech, "cs");
+	const { sid } = await api("start", { lang: "cs", page: "/" });
+	const msg = (text) => api("msg", { sid, text });
+	const history = () => api("history?sid=" + sid);
+	const preferred = () => sql.prepare("SELECT lang FROM dialogs WHERE id=?").get(sid).lang;
+	provider = () => geminiResult("", true, "cs");
+	await msg("Kdo vyhrál fotbalový zápas?");
+	const calls = requests.length;
+	delete process.env.GEMINI_API_KEY;
+	try {
+		const direct = await msg("Do you understand english?");
+		assert.match(direct.messages[1].text, /^Yes, I can help in English\./);
+		assert.deepEqual(
+			direct.chips.map((chip) => chip.label),
+			["How do I choose shading?", "How do I get a quote?", "Can I ask another question?"],
+		);
+		assert.deepEqual((await history()).chips, direct.chips);
+		assert.equal(preferred(), "en");
+		assert.equal(requests.length, calls);
+	} finally {
+		process.env.GEMINI_API_KEY = "test-only";
+	}
+	provider = () => geminiResult("", true, "de");
+	const ambiguous = await msg("OK");
+	assert.match(ambiguous.messages[1].text, /^I don’t have a verified answer/);
+	assert.equal(ambiguous.chips.length, 3);
+	assert.equal(preferred(), "en");
+	provider = () =>
+		requests.at(-1).generationConfig.responseSchema.properties.faithful
+			? geminiResponse({ faithful: true })
+			: geminiResult(english, false, "en", czech);
+	const free = await api("start", { lang: "cs", page: "/" });
+	const englishQuestion = await api("msg", {
+		sid: free.sid,
+		text: "Do you install exterior blinds?",
+	});
+	assert.equal(englishQuestion.messages[1].text.split("\n\n")[0], english);
+	assert.match(englishQuestion.chips[0].label, /^How do I/);
+	assert.deepEqual((await api("history?sid=" + free.sid)).chips, englishQuestion.chips);
+	provider = () => geminiResult(czech, false, "cs", czech);
+	const czechQuestion = await api("msg", {
+		sid: free.sid,
+		text: "Montujete venkovní žaluzie?",
+	});
+	assert.equal(czechQuestion.messages[1].text.split("\n\n")[0], czech);
+	assert.match(czechQuestion.chips[0].label, /stínění/);
+	assert.deepEqual((await api("history?sid=" + free.sid)).chips, czechQuestion.chips);
+	const outbound = JSON.parse(requests.at(-1).contents[0].parts[0].text);
+	assert.equal(outbound.previousEvidence, czech);
+});
+test("detected reply language survives handoff and a clear quote starts in the visitor language", async () => {
+	sql.exec("DELETE FROM gemini_attempts");
+	addKnowledge("Montujeme venkovní žaluzie.", "cs");
+	const { sid } = await api("start", { lang: "cs", page: "/" });
+	provider = () => geminiResult("", true, "de");
+	const first = await api("msg", { sid, text: "Sind Sonderanfertigungen machbar?" });
+	assert.match(first.messages[1].text, /^Dazu finde ich/);
+	const second = await api("msg", { sid, text: "Gibt es Sonderanfertigungen?" });
+	assert.match(second.question, /Wie heißen Sie\?/);
+	assert.equal((await api("history?sid=" + sid)).question, second.question);
+	const contact = await api("msg", { sid, text: "Jana Dvořáková" });
+	assert.match(contact.question, /Telefonnummer oder E-Mail-Adresse\?/);
+	const review = await api("msg", { sid, text: "jana@example.org" });
+	assert.match(review.question, /^Bitte prüfen/);
+	assert.equal((await api("history?sid=" + sid)).question, review.question);
+	const quote = await api("start", { lang: "cs", page: "/" });
+	const calls = requests.length;
+	const pick = await api("msg", { sid: quote.sid, text: "How much are exterior blinds?" });
+	assert.equal(pick.question, "Which product are you interested in?");
+	assert.equal((await api("history?sid=" + quote.sid)).question, pick.question);
+	assert.equal(requests.length, calls);
+});
+test("malformed translations and translated claims with changed numbers or contact details never reach verification", async () => {
+	sql.exec("DELETE FROM gemini_attempts");
+	const czech = "Lamela je široká 80 mm.";
+	addKnowledge(czech, "cs");
+	for (const [reply, evidence] of [
+		["The slat is 80 mm wide.", "Lamela je široká 70 mm."],
+		["The slat is 90 mm wide.", czech],
+		["The slat is 80 mm wide. Email service@example.com.", czech],
+	]) {
+		const { sid } = await api("start", { lang: "cs", page: "/" });
+		const previous = requests.length;
+		provider = () => geminiResult(reply, false, "en", evidence);
+		const result = await api("msg", { sid, text: "How wide are your slats?" });
+		assert.match(result.messages[1].text, /^I don’t have a verified answer/);
+		assert.equal(requests.length, previous + 2);
+		assert.ok(
+			requests
+				.slice(previous)
+				.every((request) => request.generationConfig.responseSchema.properties.evidence),
+		);
+	}
+});
 test("status, start and reset introduce the AI agent and offer three starters in each language", async () => {
 	for (const [lang, identity] of [
 		["cs", /AI asistent/],

@@ -36,9 +36,12 @@ export const copy = {
 	],
 };
 export type Language = keyof typeof copy;
+export function isLanguage(value: unknown): value is Language {
+	return typeof value === "string" && Object.hasOwn(copy, value);
+}
 export function language(value: unknown) {
 	const key = typeof value === "string" ? value.toLowerCase().split("-")[0] : "";
-	return Object.hasOwn(copy, key) ? (key as Language) : "cs";
+	return isLanguage(key) ? key : "cs";
 }
 export function startCopy(lang: Language) {
 	const [greeting, note, ...labels] = copy[lang];
@@ -51,6 +54,7 @@ export function startCopy(lang: Language) {
 
 export const consultation = {
 	cs: {
+		languageHelp: "Ano, můžeme si psát česky. S jakým stíněním vám mohu pomoci?",
 		ask: "Na co se chcete zeptat ohledně stínění Gorbach?",
 		discover:
 			"Rád vám pomohu vybrat stínění. Řešíte okna, terasu, nebo jiný prostor? Co je pro vás nejdůležitější?",
@@ -68,6 +72,7 @@ export const consultation = {
 		declineChip: "Zpět k výběru stínění",
 	},
 	en: {
+		languageHelp: "Yes, I can help in English. What would you like to shade?",
 		ask: "What would you like to know about Gorbach shading?",
 		discover:
 			"I can help you choose shading. Is it for windows, a patio, or another space? What matters most to you?",
@@ -86,6 +91,7 @@ export const consultation = {
 		declineChip: "Back to choosing shading",
 	},
 	de: {
+		languageHelp: "Ja, ich kann Ihnen auf Deutsch helfen. Was möchten Sie beschatten?",
 		ask: "Was möchten Sie über den Sonnenschutz von Gorbach wissen?",
 		discover:
 			"Ich helfe Ihnen bei der Auswahl. Geht es um Fenster, eine Terrasse oder einen anderen Bereich? Was ist Ihnen besonders wichtig?",
@@ -105,6 +111,7 @@ export const consultation = {
 		declineChip: "Zurück zur Auswahl",
 	},
 	ru: {
+		languageHelp: "Да, я могу помочь на русском. Что вы хотите затенить?",
 		ask: "Что вы хотите узнать о солнцезащите Gorbach?",
 		discover:
 			"Помогу подобрать солнцезащиту. Что нужно затенить: окна, террасу или другое пространство? Что для вас важнее всего?",
@@ -122,6 +129,7 @@ export const consultation = {
 		declineChip: "Вернуться к выбору",
 	},
 	uk: {
+		languageHelp: "Так, я можу допомогти українською. Що ви хочете затінити?",
 		ask: "Що ви хочете дізнатися про сонцезахист Gorbach?",
 		discover:
 			"Допоможу підібрати сонцезахист. Потрібно затінити вікна, терасу чи інший простір? Що для вас найважливіше?",
