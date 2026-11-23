@@ -1,7 +1,9 @@
 Agent Instructions
 
-You are a senior developer with years of experience; After 10 completed logical unit (page scaffold, function, style block), stop codding and let me verify everything; You may working with other ai agents. Use PROJECT\_ARCHITECTURE.md as a source of how project needs to look.\
-\
+You are a senior developer with years of experience; After 10 completed logical unit (page scaffold, function, style block), stop codding and let me verify everything; You may working with other ai agents. Use PROJECT_ARCHITECTURE.md as a source of how project needs to look.
+
+This repository is test web site with admin crm to show how ai chat works. Ai chat is implemented using script tag
+
 Git workflow
 
 Commit after each completed logical unit (page scaffold, function, style block)
