@@ -63,7 +63,15 @@ type ProviderResult =
 	| { outcome: "unavailable"; lang: Language }
 	| { outcome: "limited"; lang: Language; text: string };
 
-const answerTimeout = 15000;
+const answerTimeout = 28_000;
+const finishReasons = new Set([
+	"MAX_TOKENS",
+	"SAFETY",
+	"RECITATION",
+	"BLOCKLIST",
+	"PROHIBITED_CONTENT",
+	"SPII",
+]);
 const sharedSectionIds = new Set([
 	"produkty",
 	"ovladani",
@@ -200,6 +208,8 @@ export async function knowledgeAnswer(
 					lang,
 				};
 			}
+			const phase = schema === consultSchema ? "selection" : "verification";
+			const started = Date.now();
 			const response = await fetch(
 				"https://generativelanguage.googleapis.com/v1beta/models/" +
 					model +
@@ -223,13 +233,33 @@ export async function knowledgeAnswer(
 					}),
 					signal,
 				},
-			);
+			).catch((error: unknown) => {
+				const timedOut =
+					signal.aborted || (error instanceof DOMException && error.name === "TimeoutError");
+				console.warn(
+					"gemini_request_failed",
+					phase,
+					timedOut ? "timeout" : "transport",
+					Date.now() - started,
+				);
+				return undefined;
+			});
+			if (!response) return unavailable();
 			if (!response.ok) {
 				console.warn("gemini_http_error", response.status);
 				return unavailable();
 			}
 			const candidate = (await response.json()).candidates?.[0];
-			if (candidate?.finishReason !== "STOP") return unavailable();
+			if (candidate?.finishReason !== "STOP") {
+				const reason = candidate?.finishReason;
+				console.warn(
+					"gemini_incomplete",
+					phase,
+					finishReasons.has(reason) ? reason : "other",
+					Date.now() - started,
+				);
+				return unavailable();
+			}
 			try {
 				const parts: { thought?: boolean; text?: string }[] = candidate.content.parts;
 				const result: Record<string, unknown> | null = JSON.parse(

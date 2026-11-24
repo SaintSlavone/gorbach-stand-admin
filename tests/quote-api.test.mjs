@@ -743,6 +743,42 @@ test("a Czech product fact can be rendered in Ukrainian after a failed verifier,
 	assert.equal(requests.length, before + 4);
 });
 
+test("Ukrainian blackout clarification shares the extended deadline across verification and retry", async () => {
+	sql.exec("DELETE FROM gemini_attempts");
+	const source = shippedKnowledge().find(({ id }) => id === "venkovni-zaluzie");
+	const line =
+		"Žaluzie typu Z poskytují velmi vysoký stupeň zastínění, ale úplné zatemnění nelze garantovat.";
+	const translated =
+		"Жалюзі типу Z забезпечують дуже високий рівень затінення, але повне затемнення гарантувати не можна.";
+	assert.ok(source.text.split("\n").includes(line));
+	saveKnowledgeSections([source]);
+	const { sid } = await api("start", { lang: "cs", page: "/" });
+	const originalTimeout = AbortSignal.timeout;
+	const timeouts = [];
+	AbortSignal.timeout = (ms) => {
+		timeouts.push(ms);
+		return originalTimeout(ms);
+	};
+	let verifications = 0;
+	provider = () =>
+		requests.at(-1).generationConfig.responseSchema.properties.faithful
+			? geminiResponse({ faithful: ++verifications === 2 })
+			: geminiResult(translated, false, "uk", [line]);
+	const before = requests.length;
+	try {
+		const reply = await api("msg", {
+			sid,
+			text: "Чи повністю затемнюють кімнату зовнішні жалюзі?",
+		});
+		assert.equal(reply.lang, "uk");
+		assert.equal(reply.messages.at(-1).text.split("\n\n")[0], translated);
+		assert.equal(requests.length, before + 4);
+		assert.equal(timeouts.filter((ms) => ms === 28_000).length, 1);
+	} finally {
+		AbortSignal.timeout = originalTimeout;
+	}
+});
+
 test("explicit exterior-blind model lists read only the pinned Czech offer and answer in all five languages offline", async () => {
 	sql.exec("DELETE FROM gemini_attempts");
 	const shipped = shippedKnowledge();
