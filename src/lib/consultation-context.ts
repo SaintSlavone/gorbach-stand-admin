@@ -22,8 +22,12 @@ export type ConsultationContext = {
 const topics = Object.keys(productPatterns) as ProductTopic[];
 
 export function productTopic(text: string): ProductTopic | undefined {
-	const matches = topics.filter((topic) => productPatterns[topic].test(text));
+	const matches = mentionedProducts(text);
 	return matches.length === 1 ? matches[0] : undefined;
+}
+
+export function mentionedProducts(text: string) {
+	return topics.filter((topic) => productPatterns[topic].test(text));
 }
 
 export function sectionProduct(id: string | undefined, title: string) {

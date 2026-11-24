@@ -1,6 +1,7 @@
 import { savedKnowledgeLanguage } from "./validate-revision";
 import { isLanguage, type Language } from "./chat-copy";
 import { canInferVisitorLanguage } from "./chat-language";
+import { exteriorModels } from "./exterior-models";
 import {
 	clearlyOffTopic,
 	productTopic,
@@ -62,6 +63,44 @@ type ProviderResult =
 	| { outcome: "unavailable"; lang: Language }
 	| { outcome: "limited"; lang: Language; text: string };
 
+const answerTimeout = 15000;
+const sharedSectionIds = new Set([
+	"produkty",
+	"ovladani",
+	"opravy",
+	"cisteni",
+	"servis",
+	"kontakt",
+	"spoluprace",
+]);
+
+function sharedExcerpt(text: string, question: string) {
+	if (text.length <= 1500) return text;
+	const tokens = (value: string) =>
+		value
+			.toLowerCase()
+			.normalize("NFD")
+			.replace(/\p{M}+/gu, "")
+			.match(/\p{L}{5,}/gu) ?? [];
+	const terms = new Set(tokens(question).map((term) => term.slice(0, 5)));
+	const lines = text.split(/\r?\n/u).map((line, index) => ({
+		line,
+		index,
+		score: tokens(line).filter((word) => terms.has(word.slice(0, 5))).length,
+	}));
+	let length = 0;
+	const selected = [];
+	for (const entry of lines.sort((a, b) => b.score - a.score || a.index - b.index)) {
+		if (!entry.line.trim() || length + entry.line.length + 1 > 850) continue;
+		selected.push(entry);
+		length += entry.line.length + 1;
+	}
+	return selected
+		.sort((a, b) => a.index - b.index)
+		.map(({ line }) => line)
+		.join("\n");
+}
+
 function customerFacing(text: string) {
 	return (
 		text.length > 0 &&
@@ -116,10 +155,13 @@ export async function knowledgeAnswer(
 		model = process.env.GEMINI_MODEL;
 	if (clearlyOffTopic(question)) return unsupported(false);
 	if (!content) return unsupported();
-	const signal = AbortSignal.timeout(15000);
+	const signal = AbortSignal.timeout(answerTimeout);
+	const deadline = Date.now() + answerTimeout;
 	try {
 		const source: { id?: string; title: string; text: string; lang?: unknown }[] =
 			JSON.parse(content);
+		const catalog = exteriorModels(question, source);
+		if (catalog) return catalog;
 		const sections = source.flatMap((section) => {
 			const language = savedKnowledgeLanguage(section.lang);
 			return language
@@ -129,6 +171,7 @@ export async function knowledgeAnswer(
 							title: redact(section.title),
 							text: redact(section.text),
 							product: sectionProduct(section.id, section.title),
+							shared: section.id && sharedSectionIds.has(section.id) ? true : undefined,
 						},
 					]
 				: [];
@@ -173,6 +216,9 @@ export async function knowledgeAnswer(
 							temperature: 0,
 							responseMimeType: "application/json",
 							responseSchema: schema,
+							...(model === "gemini-3.8-flash"
+								? { thinkingConfig: { thinkingLevel: "LOW" } }
+								: {}),
 						},
 					}),
 					signal,
@@ -199,15 +245,34 @@ export async function knowledgeAnswer(
 		};
 
 		const redactedQuestion = redactQuestion(question, lang);
-		const matchingSections = (evidence: string) =>
-			sections.filter((section) =>
+		const matchingSections = (evidence: string, candidates = sections) =>
+			candidates.filter((section) =>
 				section.text.split(/\r?\n/).some((line) => line.trim() === evidence),
 			);
 		const { requestedProduct, previousProduct, previousEvidence } = context;
+		const contextProduct = requestedProduct ?? previousProduct;
+		const shortlist =
+			contextProduct &&
+			sections.some((section) => !section.shared && section.product === contextProduct)
+				? sections
+						.filter(
+							(section) =>
+								section.shared || !section.product || section.product === contextProduct,
+						)
+						.map((section) =>
+							(section.product && !section.shared) || section.text.length <= 1500
+								? section
+								: { ...section, text: sharedExcerpt(section.text, redactedQuestion) },
+						)
+				: sections;
+		const focused =
+			shortlist.length !== sections.length ||
+			shortlist.some((section, index) => section !== sections[index])
+				? shortlist
+				: sections;
 		const payload = {
 			preferredLanguage,
 			knownLanguage,
-			sections,
 			attachmentCount,
 			question: redactedQuestion,
 			requestedProduct,
@@ -222,9 +287,13 @@ export async function knowledgeAnswer(
 		let retryGrounded = false;
 		let verifierUnavailable = false;
 		for (let attempt = 0; attempt < 2; attempt++) {
+			const available = attempt === 0 || retryGrounded ? focused : sections;
+			// Avoid starting the larger retry when the shared deadline is already close.
+			if (attempt && available !== focused && deadline - Date.now() < 6000)
+				return unavailable();
 			const response = await generate(
 				retryGrounded ? retryConsult : consult,
-				payload,
+				{ ...payload, sections: available },
 				consultSchema,
 			);
 			if ("outcome" in response) return response;
@@ -237,7 +306,10 @@ export async function knowledgeAnswer(
 			)
 				lang = result.language;
 			if (result.scope === "unrelated") return unsupported(false);
-			if (result.unknown === true) return unsupported();
+			if (result.unknown === true) {
+				if (attempt === 0 && focused !== sections) continue;
+				return unsupported();
+			}
 			if (
 				result.scope !== "consultation" ||
 				result.unknown !== false ||
@@ -249,9 +321,8 @@ export async function knowledgeAnswer(
 			const lines = citedLines(result.evidence);
 			const reply = result.reply.trim();
 			if (!lines || !customerFacing(reply) || hasUnverifiedNumber(reply, lines)) continue;
-			const contextProduct = requestedProduct ?? previousProduct;
 			const citations = lines.flatMap((text) => {
-				const matches = matchingSections(text);
+				const matches = matchingSections(text, available);
 				const explicitProduct = productTopic(text);
 				const compatible = contextProduct
 					? matches.filter((section) =>

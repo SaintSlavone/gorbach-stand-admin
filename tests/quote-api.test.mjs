@@ -695,7 +695,7 @@ test("public contact requests use pinned business information in the visitor lan
 	);
 });
 
-test("the shipped Czech model list answers in Ukrainian after a failed verifier, with bounded retry", async () => {
+test("a Czech product fact can be rendered in Ukrainian after a failed verifier, with bounded retry", async () => {
 	sql.exec("DELETE FROM gemini_attempts");
 	const source = shippedKnowledge().find(({ id }) => id === "venkovni-zaluzie");
 	const line =
@@ -706,6 +706,8 @@ test("the shipped Czech model list answers in Ukrainian after a failed verifier,
 	const before = requests.length;
 	let selections = 0,
 		verifications = 0;
+	const question =
+		"Які типи зовнішніх жалюзі ваша фірма пропонує для різних монтажних виконань?";
 	const translation =
 		"Ми пропонуємо, зокрема, Zetta 90, Zetta 70, Cetta 80 і Cetta 65 у різних монтажних виконаннях.";
 	provider = () => {
@@ -725,12 +727,12 @@ test("the shipped Czech model list answers in Ukrainian after a failed verifier,
 		}
 		selections++;
 		assert.equal(data.knownLanguage, "uk");
-		assert.equal(data.question, "Які типи жалюзі пропонує ваша фірма?");
+		assert.equal(data.question, question);
 		if (selections === 2)
 			assert.match(request.systemInstruction.parts[0].text, /short, literal translation/);
 		return geminiResult(translation, false, "uk", [line]);
 	};
-	const answer = await api("msg", { sid, text: "Які типи жалюзі пропонує ваша фірма?" });
+	const answer = await api("msg", { sid, text: question });
 	assert.equal(answer.lang, "uk");
 	assert.equal(answer.messages.at(-1).text.split("\n\n")[0], translation);
 	assert.equal(requests.length, before + 4);
@@ -739,6 +741,133 @@ test("the shipped Czech model list answers in Ukrainian after a failed verifier,
 	const switched = await api("msg", { sid, text: "English?" });
 	assert.equal(switched.lang, "en");
 	assert.equal(requests.length, before + 4);
+});
+
+test("explicit exterior-blind model lists read only the pinned Czech offer and answer in all five languages offline", async () => {
+	sql.exec("DELETE FROM gemini_attempts");
+	const shipped = shippedKnowledge();
+	const source = shipped.find(({ id }) => id === "venkovni-zaluzie");
+	const line =
+		"Nabízíme například Zetta 90, Zetta 70, Cetta 80 a Cetta 65 v různých montážních provedeních.";
+	assert.ok(source.text.split("\n").includes(line));
+	saveKnowledgeSections(shipped);
+	const cases = [
+		["cs", "Jaké typy venkovních žaluzií nabízíte?", /^Z venkovních žaluzií nabízíme/],
+		["en", "What types of blinds does your company offer?", /^Our exterior blind models/],
+		[
+			"de",
+			"Welche Modelle von Außenjalousien bieten Sie an?",
+			/^Zu unseren Außenjalousien/,
+		],
+		[
+			"ru",
+			"Какие типы жалюзи предлагает ваша фирма?",
+			/^Среди наших моделей наружных жалюзи/,
+		],
+		["uk", "Які типи жалюзі пропонує ваша фірма?", /^Серед наших моделей зовнішніх жалюзі/],
+	];
+	const sessions = [];
+	for (const row of cases) {
+		const { sid } = await api("start", { lang: "cs", page: "/" });
+		sessions.push([row, sid]);
+	}
+	saveKnowledgeSections([
+		{ ...source, text: source.text.replace(line, "Nabízíme modely Zetta 95 a Cetta 85.") },
+	]);
+	const before = requests.length;
+	delete process.env.GEMINI_API_KEY;
+	try {
+		for (const [[lang, question, intro], sid] of sessions) {
+			const result = await api("msg", { sid, text: question });
+			assert.equal(result.lang, lang);
+			const reply = result.messages.at(-1).text;
+			assert.match(reply, intro);
+			for (const model of ["Zetta 90", "Zetta 70", "Cetta 80", "Cetta 65"])
+				assert.ok(reply.includes(model));
+			assert.doesNotMatch(reply, /Zetta 95|Cetta 85/);
+			assert.equal((await api("history?sid=" + sid)).lang, lang);
+		}
+		const revised = await api("start", { lang: "cs", page: "/" });
+		const actual = await api("msg", { sid: revised.sid, text: cases[4][1] });
+		assert.match(actual.messages.at(-1).text, /Zetta 95.*Cetta 85/);
+		assert.doesNotMatch(actual.messages.at(-1).text, /Zetta 90/);
+		const unrelated = await api("msg", {
+			sid: revised.sid,
+			text: "What types of blinds does your company offer for cars?",
+		});
+		assert.doesNotMatch(unrelated.messages.at(-1).text, /Zetta|Cetta/);
+		assert.equal(requests.length, before);
+		assert.equal(sql.prepare("SELECT COUNT(*) AS n FROM gemini_attempts").get().n, 0);
+	} finally {
+		process.env.GEMINI_API_KEY = "test-only";
+	}
+});
+
+test("Gemini scope sends focused product and shared excerpts, falls back to the complete corpus, and uses LOW only on 3.8 Flash", async () => {
+	sql.exec("DELETE FROM gemini_attempts");
+	const originalModel = process.env.GEMINI_MODEL;
+	const shipped = shippedKnowledge();
+	saveKnowledgeSections(shipped);
+	const fact = "Možnost elektrického i manuálního ovládání.";
+	const translation = "Electric and manual controls are available.";
+	const ask = async (text) => {
+		const { sid } = await api("start", { lang: "en", page: "/" });
+		return api("msg", { sid, text });
+	};
+	const outbound = (request) => JSON.parse(request.contents[0].parts[0].text);
+	try {
+		let selections = 0;
+		process.env.GEMINI_MODEL = "gemini-3.8-flash";
+		const before = requests.length;
+		provider = () => {
+			const request = requests.at(-1);
+			assert.deepEqual(request.generationConfig.thinkingConfig, { thinkingLevel: "LOW" });
+			if (request.generationConfig.responseSchema.properties.faithful)
+				return geminiResponse({ faithful: true });
+			selections++;
+			const { sections } = outbound(request);
+			if (selections === 1) {
+				assert.ok(sections.some((section) => section.product === "outdoor-blinds"));
+				assert.ok(
+					sections.some(
+						(section) => /chytrá domácnost/i.test(section.title) && section.text.length <= 1500,
+					),
+				);
+				assert.ok(
+					sections.some(
+						(section) => section.title === "Pravidelná údržba a servisní prohlídky",
+					),
+				);
+				assert.ok(!sections.some((section) => section.product === "pergolas"));
+				return geminiResult("", true, "en", []);
+			}
+			assert.equal(sections.length, shipped.length);
+			return geminiResult(translation, false, "en", [fact]);
+		};
+		assert.equal(
+			(await ask("Can exterior blinds be controlled with a switch?")).messages
+				.at(-1)
+				.text.split("\n\n")[0],
+			translation,
+		);
+		assert.equal(requests.length, before + 3);
+		const [focused, complete] = requests.slice(before, before + 2);
+		assert.ok(
+			Buffer.byteLength(JSON.stringify(focused)) <
+				Buffer.byteLength(JSON.stringify(complete)) / 2,
+		);
+		process.env.GEMINI_MODEL = "fixture-model";
+		provider = () => {
+			const request = requests.at(-1);
+			assert.equal(request.generationConfig.thinkingConfig, undefined);
+			assert.equal(outbound(request).sections.length, shipped.length);
+			return geminiResult("", true, "en", []);
+		};
+		await ask("What shading could fit my project?");
+		assert.equal(requests.length, before + 4);
+	} finally {
+		process.env.GEMINI_MODEL = originalModel;
+	}
 });
 
 test("multiple citations must all match the pinned source before natural wording can be verified", async () => {

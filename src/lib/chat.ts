@@ -10,7 +10,7 @@ import {
 } from "./chat-language";
 import {
 	consultationNeed,
-	productTopic,
+	mentionedProducts,
 	readConsultationContext,
 	refersToProduct,
 } from "./consultation-context";
@@ -417,9 +417,10 @@ async function dispatch(req: Request, route: Endpoint) {
 	if (!("general" in turn) || !turn.general) return turn;
 	const { text, lang, detectedLanguage, content, attachmentCount, lastMessage, context } =
 		turn.general;
-	const requestedProduct = productTopic(text);
+	const products = mentionedProducts(text);
+	const requestedProduct = products.length === 1 ? products[0] : undefined;
 	const referencedTopic =
-		!requestedProduct && refersToProduct(text) ? context.active : undefined;
+		!products.length && refersToProduct(text) ? context.active : undefined;
 	const priorTopic = requestedProduct ?? referencedTopic;
 	const ip = clientBucket(req);
 	const answer = await knowledgeAnswer(
