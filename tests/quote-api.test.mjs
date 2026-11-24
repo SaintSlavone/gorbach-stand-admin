@@ -713,7 +713,12 @@ test("a Czech product fact can be rendered in Ukrainian after a failed verifier,
 	provider = () => {
 		const request = requests.at(-1);
 		const data = JSON.parse(request.contents[0].parts[0].text);
-		if (request.generationConfig.responseSchema.properties.faithful) {
+		const properties = request.generationConfig.responseSchema.properties;
+		if (properties.translation) {
+			assert.deepEqual(data, { evidence: line, sourceLanguage: "cs", targetLanguage: "uk" });
+			return geminiResponse({ translation });
+		}
+		if (properties.faithful) {
 			verifications++;
 			assert.deepEqual(data, {
 				evidence: line,
@@ -728,28 +733,26 @@ test("a Czech product fact can be rendered in Ukrainian after a failed verifier,
 		selections++;
 		assert.equal(data.knownLanguage, "uk");
 		assert.equal(data.question, question);
-		if (selections === 2)
-			assert.match(request.systemInstruction.parts[0].text, /short, literal translation/);
+		assert.match(request.systemInstruction.parts[0].text, /close literal translation/);
 		return geminiResult(translation, false, "uk", [line]);
 	};
 	const answer = await api("msg", { sid, text: question });
 	assert.equal(answer.lang, "uk");
 	assert.equal(answer.messages.at(-1).text.split("\n\n")[0], translation);
 	assert.equal(requests.length, before + 4);
-	assert.equal(selections, 2);
+	assert.equal(selections, 1);
 	assert.equal(verifications, 2);
 	const switched = await api("msg", { sid, text: "English?" });
 	assert.equal(switched.lang, "en");
 	assert.equal(requests.length, before + 4);
 });
 
-test("Ukrainian blackout clarification shares the extended deadline across verification and retry", async () => {
+test("a rejected paraphrase is repaired from the same exact product line and reverified within one deadline", async () => {
 	sql.exec("DELETE FROM gemini_attempts");
 	const source = shippedKnowledge().find(({ id }) => id === "venkovni-zaluzie");
-	const line =
-		"Žaluzie typu Z poskytují velmi vysoký stupeň zastínění, ale úplné zatemnění nelze garantovat.";
-	const translated =
-		"Жалюзі типу Z забезпечують дуже високий рівень затінення, але повне затемнення гарантувати не можна.";
+	const line = "Vhodné pro novostavby i dokončené objekty.";
+	const translated = "Підходять як для новобудов, так і для вже збудованих об’єктів.";
+	const rejected = "Підходять для будь-яких нових і готових будинків без обмежень.";
 	assert.ok(source.text.split("\n").includes(line));
 	saveKnowledgeSections([source]);
 	const { sid } = await api("start", { lang: "cs", page: "/" });
@@ -760,22 +763,109 @@ test("Ukrainian blackout clarification shares the extended deadline across verif
 		return originalTimeout(ms);
 	};
 	let verifications = 0;
-	provider = () =>
-		requests.at(-1).generationConfig.responseSchema.properties.faithful
-			? geminiResponse({ faithful: ++verifications === 2 })
-			: geminiResult(translated, false, "uk", [line]);
+	provider = () => {
+		const request = requests.at(-1);
+		const data = JSON.parse(request.contents[0].parts[0].text);
+		const properties = request.generationConfig.responseSchema.properties;
+		if (properties.translation) {
+			assert.deepEqual(data, { evidence: line, sourceLanguage: "cs", targetLanguage: "uk" });
+			return geminiResponse({ translation: translated });
+		}
+		if (properties.faithful) {
+			verifications++;
+			assert.equal(data.reply, verifications === 1 ? rejected : translated);
+			assert.equal(data.evidence, line);
+			return geminiResponse({ faithful: verifications === 2 });
+		}
+		return geminiResult(rejected, false, "uk", [line]);
+	};
 	const before = requests.length;
 	try {
 		const reply = await api("msg", {
 			sid,
-			text: "Чи повністю затемнюють кімнату зовнішні жалюзі?",
+			text: "Чи підходять зовнішні жалюзі для вже збудованого будинку?",
 		});
 		assert.equal(reply.lang, "uk");
 		assert.equal(reply.messages.at(-1).text.split("\n\n")[0], translated);
 		assert.equal(requests.length, before + 4);
 		assert.equal(timeouts.filter((ms) => ms === 28_000).length, 1);
+		const other = await api("start", { lang: "cs", page: "/" });
+		provider = () => {
+			const properties = requests.at(-1).generationConfig.responseSchema.properties;
+			if (properties.translation) return geminiResponse({ translation: translated });
+			if (properties.faithful) return geminiResponse({ faithful: false });
+			return geminiResult(rejected, false, "uk", [line]);
+		};
+		const refused = await api("msg", {
+			sid: other.sid,
+			text: "Чи підходять зовнішні жалюзі для вже збудованого будинку?",
+		});
+		assert.match(refused.messages.at(-1).text, /немає підтвердженої відповіді/);
+		assert.ok(!refused.messages.at(-1).text.includes(translated));
+		assert.equal(requests.length, before + 8);
 	} finally {
 		AbortSignal.timeout = originalTimeout;
+	}
+});
+
+test("the pinned exterior-blind blackout FAQ preserves the same qualification in all five languages", async () => {
+	sql.exec("DELETE FROM gemini_attempts");
+	const source = shippedKnowledge().find(({ id }) => id === "venkovni-zaluzie");
+	const evidence =
+		"Žaluzie typu Z poskytují velmi vysoký stupeň zastínění, ale úplné zatemnění nelze garantovat.";
+	assert.ok(source.text.includes(evidence));
+	saveKnowledgeSections([source]);
+	const cases = [
+		[
+			"cs",
+			"Zatemňují venkovní žaluzie místnost úplně?",
+			/zastínění.*úplné zatemnění nelze garantovat/,
+		],
+		[
+			"en",
+			"Do exterior blinds completely darken a room?",
+			/shading.*complete blackout cannot be guaranteed/,
+		],
+		[
+			"de",
+			"Verdunkeln Außenjalousien einen Raum vollständig?",
+			/Verschattung.*vollständige Verdunkelung lässt sich jedoch nicht garantieren/,
+		],
+		[
+			"ru",
+			"Полностью ли затемняют комнату наружные жалюзи?",
+			/затенения.*полное затемнение нельзя гарантировать/,
+		],
+		[
+			"uk",
+			"Чи повністю затемнюють кімнату зовнішні жалюзі?",
+			/затінення.*повне затемнення не можна гарантувати/,
+		],
+	];
+	const before = requests.length;
+	delete process.env.GEMINI_API_KEY;
+	try {
+		for (const [lang, question, expected] of cases) {
+			const { sid } = await api("start", { lang: "cs", page: "/" });
+			const result = await api("msg", { sid, text: question });
+			assert.equal(result.lang, lang);
+			assert.match(result.messages.at(-1).text, expected);
+		}
+		saveKnowledgeSections([
+			{
+				...source,
+				text: source.text.replace(evidence, "Nabízíme různé možnosti zastínění."),
+			},
+		]);
+		const { sid } = await api("start", { lang: "cs", page: "/" });
+		const revised = await api("msg", { sid, text: cases[1][1] });
+		assert.doesNotMatch(
+			revised.messages.at(-1).text,
+			/complete blackout cannot be guaranteed/,
+		);
+		assert.equal(requests.length, before);
+	} finally {
+		process.env.GEMINI_API_KEY = "test-only";
 	}
 });
 
