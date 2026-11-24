@@ -2,6 +2,7 @@ import { readUpload, storeUpload } from "./file-upload";
 import { writeTransaction, expiryCutoff } from "./attachments";
 import { clientBucket, reserveGeminiAttempt } from "./gemini-quota";
 import { knowledgeAnswer } from "./knowledge-answer";
+import { publicContactAnswer, publicContactRequest } from "./public-contact";
 import {
 	detectVisitorLanguage,
 	greetingLanguage,
@@ -281,6 +282,12 @@ async function dispatch(req: Request, route: Endpoint) {
 			return handoff ? submitHandoff(sid, handoff) : submitLead(sid);
 		}
 		if (lead) throw new ApiError(409, "submitted");
+		const pinnedKnowledge = () => {
+			const revision = db()
+				.prepare("SELECT content FROM revisions WHERE id=? AND kind='knowledge'")
+				.get(dialog.knowledge_version);
+			return revision ? String(revision.content) : null;
+		};
 		const input = readInput(body);
 		const value = input.values.join(", ");
 		const choices =
@@ -318,6 +325,23 @@ async function dispatch(req: Request, route: Endpoint) {
 				: startCopy(courtesyLanguage).greeting;
 			return saveExchange(sid, visitorText, reply, courtesyLanguage, screen);
 		}
+		const detectedLanguage = freeText ? detectVisitorLanguage(value) : undefined;
+		const turnLanguage = detectedLanguage ?? lang;
+		const contactRequest = freeText ? publicContactRequest(value) : undefined;
+		if (contactRequest) {
+			const reply = publicContactAnswer(pinnedKnowledge(), contactRequest, turnLanguage);
+			db()
+				.prepare("UPDATE dialogs SET lang=?,unsupported_streak=0 WHERE id=?")
+				.run(turnLanguage, sid);
+			if (handoff) {
+				const screen = handoffScreen(handoff, turnLanguage);
+				return saveExchange(sid, visitorText, [reply, screen.question], turnLanguage, screen);
+			}
+			return saveExchange(sid, visitorText, reply, turnLanguage, {
+				...generalScreen,
+				chips: consultationChips(turnLanguage, false),
+			});
+		}
 		if (handoff) {
 			const next = answerHandoff(sid, handoff, input);
 			const screen = next
@@ -330,8 +354,6 @@ async function dispatch(req: Request, route: Endpoint) {
 				"question" in screen ? String(screen.question) : consultation[lang].discover;
 			return saveExchange(sid, visitorText, reply, lang, screen);
 		}
-		const detectedLanguage = freeText ? detectVisitorLanguage(value) : undefined;
-		const turnLanguage = detectedLanguage ?? lang;
 		const quoteRequested =
 			(input.kind === "chip" && value === "quote") ||
 			(input.kind === "text" && isQuoteRequest(value, turnLanguage));
@@ -352,9 +374,6 @@ async function dispatch(req: Request, route: Endpoint) {
 			String(dialog.consultation_evidence),
 		);
 		if (input.kind === "text") {
-			const revision = db()
-				.prepare("SELECT content FROM revisions WHERE id=? AND kind='knowledge'")
-				.get(dialog.knowledge_version);
 			return {
 				general: {
 					text: value,
@@ -367,7 +386,7 @@ async function dispatch(req: Request, route: Endpoint) {
 							.prepare("SELECT count(*) AS n FROM files WHERE dialog=? AND created>?")
 							.get(sid, expiryCutoff())!.n,
 					),
-					content: revision ? String(revision.content) : null,
+					content: pinnedKnowledge(),
 				},
 			};
 		}

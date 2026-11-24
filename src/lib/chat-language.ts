@@ -1,11 +1,11 @@
 import type { Language } from "./chat-copy";
 
 const capabilityQuestions: Record<Language, RegExp> = {
-	cs: /^(?:(?:mluvíte|mluvíš|rozumíte|rozumíš|umíte|umíš) česky|(?:česky|v češtině) prosím)$/u,
-	en: /^(?:(?:do|can|could|will) you (?:speak|understand|reply in|respond in|answer in|help in|chat in) english|english please|in english please)$/u,
-	de: /^(?:(?:(?:sprechen|verstehen|können) sie|(?:sprichst|verstehst|kannst) du) deutsch|(?:auf deutsch|deutsch) bitte)$/u,
-	ru: /^(?:(?:ты |вы )?(?:говоришь|говорите|понимаешь|понимаете) (?:ли (?:ты|вы) )?(?:по[- ]русски|на русском(?: языке)?|русский(?: язык)?)|(?:на русском(?: языке)?|по[- ]русски) пожалуйста|можно (?:по[- ]русски|на русском(?: языке)?))$/u,
-	uk: /^(?:(?:ти |ви )?(?:говориш|говорите|розмовляєш|розмовляєте|розумієш|розумієте) (?:українською|українську(?: мову)?)|українською будь ласка|можна українською)$/u,
+	cs: /^(?:(?:mluvíte|mluvíš|rozumíte|rozumíš|umíte|umíš) česky|(?:česky|v češtině)(?: prosím)?|čeština|czech)$/u,
+	en: /^(?:(?:do|can|could|will) you (?:speak|understand|reply in|respond in|answer in|help in|chat in) english|(?:in )?english(?: please)?|anglicky|англійською|английский)$/u,
+	de: /^(?:(?:(?:sprechen|verstehen|können) sie|(?:sprichst|verstehst|kannst) du) deutsch|(?:auf deutsch|deutsch)(?: bitte)?|german|německy)$/u,
+	ru: /^(?:(?:ты |вы )?(?:говоришь|говорите|понимаешь|понимаете) (?:ли (?:ты|вы) )?(?:по[- ]русски|на русском(?: языке)?|русский(?: язык)?)|(?:на русском(?: языке)?|по[- ]русски)(?: пожалуйста)?|можно (?:по[- ]русски|на русском(?: языке)?)|русский(?: язык)?|russian|російською)$/u,
+	uk: /^(?:(?:ти |ви )?(?:говориш|говорите|розмовляєш|розмовляєте|розумієш|розумієте) (?:українською|українську(?: мову)?)|українською(?: будь ласка)?|можна українською|українська(?: мова)?|ukrainian)$/u,
 };
 
 const greetings: Record<Language, RegExp> = {
@@ -37,11 +37,11 @@ export function languageRequest(text: string) {
 }
 
 const markers: Record<Language, RegExp> = {
-	cs: /^(?:ahoj|ano|cena|cenu|děkuji|den|dobrý|jak|jaká|jaké|jsem|kolik|mohu|montujete|nabízíte|nebo|prosím|stínění|venkovní|vy|žaluzie)$/u,
+	cs: /^(?:ahoj|ano|cena|cenu|děkuji|den|dobrý|jak|jaká|jaké|jaký|jsem|kolik|kontaktovat|mohu|montujete|nabízíte|nebo|prosím|stínění|venkovní|vás|vaše|váš|vy|žaluzie)$/u,
 	en: /^(?:are|can|could|do|does|exterior|for|hello|hi|how|i|install|much|please|price|quote|shading|the|they|what|where|which|would|you|your)$/u,
-	de: /^(?:angebot|auf|danke|das|den|deutsch|die|für|hallo|haben|ich|jalousien|kann|können|kostet|möchte|oder|preis|sonnenschutz|was|welche|wie|wir)$/u,
-	ru: /^(?:вы|где|есть|заказать|здравствуйте|интересует|какие|какой|кошек|кошках|могу|мне|можно|пожалуйста|предлагаете|расскажи|расскажите|русском|сколько|собаках|спасибо|стоит|что)$/u,
-	uk: /^(?:будь|вартість|ви|дякую|замовити|котів|ласка|мені|можна|можу|потрібно|пропонуєте|розкажи|розкажіть|скільки|сонцезахист|тварин|українською|ціна|чи|що|яке|якщо)$/u,
+	de: /^(?:adresse|angebot|auf|danke|das|den|deutsch|die|erreichen|für|hallo|haben|ich|ihre|jalousien|kann|können|kostet|möchte|oder|preis|sonnenschutz|was|welche|wie|wir)$/u,
+	ru: /^(?:ваш|ваше|вы|где|есть|заказать|здравствуйте|интересует|как|какие|какой|контакты|кошек|кошках|могу|мне|можно|пожалуйста|почта|почту|предлагаете|расскажи|расскажите|русском|связаться|сколько|собаках|спасибо|стоит|телефон|что)$/u,
+	uk: /^(?:будь|вартість|ваш|ви|дякую|електронна|замовити|контакти|котів|ласка|мені|можна|можу|пошта|потрібно|пропонує|пропонуєте|розкажи|розкажіть|скільки|сонцезахист|телефон|тварин|українською|ціна|чи|що|язатися|як|яке|який|які|якщо)$/u,
 };
 
 export function detectVisitorLanguage(text: string) {

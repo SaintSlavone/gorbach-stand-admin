@@ -607,6 +607,224 @@ function geminiResult(
 ) {
 	return geminiResponse({ reply, evidence, unknown, language, scope });
 }
+
+const shippedKnowledge = () =>
+	JSON.parse(
+		readFileSync(new URL("../data/initial/knowledge.json", import.meta.url), "utf8"),
+	);
+function saveKnowledgeSections(sections) {
+	sql
+		.prepare(
+			"INSERT INTO revisions(kind,content,editor,provenance) VALUES('knowledge',?,'tester','staff')",
+		)
+		.run(JSON.stringify(sections));
+}
+
+test("public contact requests use pinned business information in the visitor language without spending Gemini quota", async () => {
+	sql.exec("DELETE FROM gemini_attempts");
+	const real = shippedKnowledge().find(({ id }) => id === "kontakt");
+	const pinned = {
+		...real,
+		text:
+			real.text +
+			"\nVisitor email: private-lead@gorbach-zaluzie.cz\nEmail: visitor@example.org",
+	};
+	saveKnowledgeSections([pinned]);
+	const { sid } = await api("start", { lang: "cs", page: "/" });
+	saveKnowledgeSections([{ ...real, text: "Obecný kontakt: newer@gorbach-zaluzie.cz" }]);
+	const msg = (text) => api("msg", { sid, text });
+	const before = requests.length;
+	delete process.env.GEMINI_API_KEY;
+	try {
+		const screenshot = await msg("Jaké jsou vaše kontakty, jak vás mohu kontaktovat?");
+		assert.equal(screenshot.lang, "cs");
+		assert.match(
+			screenshot.messages.at(-1).text,
+			/Obecný kontakt: info@gorbach-zaluzie\.cz/,
+		);
+		assert.match(screenshot.messages.at(-1).text, /Plzeňská 197\/100/);
+		assert.doesNotMatch(
+			screenshot.messages.at(-1).text,
+			/newer|private-lead|visitor@example/,
+		);
+		const quote = await msg("What is the Gorbach email for a quote?");
+		assert.equal(quote.lang, "en");
+		assert.match(quote.messages.at(-1).text, /poptavky@gorbach-zaluzie\.cz/);
+		assert.equal(quote.progress, null);
+		const service = await msg("Wie lautet Ihre E-Mail für den Service?");
+		assert.equal(service.lang, "de");
+		assert.match(service.messages.at(-1).text, /servis@gorbach-zaluzie\.cz/);
+		const complaint = await msg("На яку електронну пошту вашої компанії надіслати скаргу?");
+		assert.equal(complaint.lang, "uk");
+		assert.match(complaint.messages.at(-1).text, /reklamace@gorbach-zaluzie\.cz/);
+		const bare = await msg("Контакти?");
+		assert.equal(bare.lang, "uk");
+		assert.match(bare.messages.at(-1).text, /Загальний контакт: info@gorbach-zaluzie\.cz/);
+		assert.match(
+			(await msg("Какой у вас телефон?")).messages.at(-1).text,
+			/^У меня нет подтверждённых/,
+		);
+		assert.match(
+			(await msg("English?")).messages.at(-1).text,
+			/^Yes, I can help in English\./,
+		);
+		assert.equal((await api("history?sid=" + sid)).lang, "en");
+		for (const [phrase, lang, headline] of [
+			["Як з вами зв’язатися?", "uk", "Загальний контакт"],
+			["Как с вами связаться?", "ru", "Общий контакт"],
+		]) {
+			const fresh = await api("start", { lang: "cs", page: "/" });
+			const contact = await api("msg", { sid: fresh.sid, text: phrase });
+			assert.equal(contact.lang, lang);
+			assert.ok(contact.messages.at(-1).text.startsWith(headline));
+		}
+		assert.equal(requests.length, before);
+	} finally {
+		process.env.GEMINI_API_KEY = "test-only";
+	}
+	provider = () => geminiResult("", true, "en");
+	const privateRequest = await msg("What is a customer's email address?");
+	assert.doesNotMatch(
+		privateRequest.messages.at(-1).text,
+		/@gorbach-zaluzie\.cz|visitor@example/,
+	);
+	assert.equal(requests.length, before + 1);
+	assert.doesNotMatch(
+		JSON.stringify(requests.at(-1)),
+		/private-lead|visitor@example|poptavky@gorbach/,
+	);
+});
+
+test("the shipped Czech model list answers in Ukrainian after a failed verifier, with bounded retry", async () => {
+	sql.exec("DELETE FROM gemini_attempts");
+	const source = shippedKnowledge().find(({ id }) => id === "venkovni-zaluzie");
+	const line =
+		"Nabízíme například Zetta 90, Zetta 70, Cetta 80 a Cetta 65 v různých montážních provedeních.";
+	assert.ok(source.text.split("\n").includes(line));
+	saveKnowledgeSections([source]);
+	const { sid } = await api("start", { lang: "cs", page: "/" });
+	const before = requests.length;
+	let selections = 0,
+		verifications = 0;
+	const translation =
+		"Ми пропонуємо, зокрема, Zetta 90, Zetta 70, Cetta 80 і Cetta 65 у різних монтажних виконаннях.";
+	provider = () => {
+		const request = requests.at(-1);
+		const data = JSON.parse(request.contents[0].parts[0].text);
+		if (request.generationConfig.responseSchema.properties.faithful) {
+			verifications++;
+			assert.deepEqual(data, {
+				evidence: line,
+				sourceLanguage: "cs",
+				reply: translation,
+				targetLanguage: "uk",
+			});
+			return verifications === 1
+				? Response.json({}, { status: 503 })
+				: geminiResponse({ faithful: true });
+		}
+		selections++;
+		assert.equal(data.knownLanguage, "uk");
+		assert.equal(data.question, "Які типи жалюзі пропонує ваша фірма?");
+		if (selections === 2)
+			assert.match(request.systemInstruction.parts[0].text, /short, literal translation/);
+		return geminiResult(translation, false, "uk", [line]);
+	};
+	const answer = await api("msg", { sid, text: "Які типи жалюзі пропонує ваша фірма?" });
+	assert.equal(answer.lang, "uk");
+	assert.equal(answer.messages.at(-1).text.split("\n\n")[0], translation);
+	assert.equal(requests.length, before + 4);
+	assert.equal(selections, 2);
+	assert.equal(verifications, 2);
+	const switched = await api("msg", { sid, text: "English?" });
+	assert.equal(switched.lang, "en");
+	assert.equal(requests.length, before + 4);
+});
+
+test("multiple citations must all match the pinned source before natural wording can be verified", async () => {
+	sql.exec("DELETE FROM gemini_attempts");
+	const first = "Venkovní žaluzie umožňují regulovat množství denního světla.";
+	const second = "U kompatibilních výrobků je možné elektrické ovládání.";
+	const reply =
+		"Exterior blinds let you adjust the daylight, and compatible products can be operated electrically.";
+	saveKnowledgeSections([
+		{
+			id: "venkovni-zaluzie",
+			title: "Venkovní žaluzie",
+			lang: "cs",
+			text: `${first}\n${second}\nQ: Mají dálkové ovládání?`,
+		},
+	]);
+	const ask = async (text, lang = "en") => {
+		const { sid } = await api("start", { lang, page: "/" });
+		return api("msg", { sid, text });
+	};
+	const before = requests.length;
+	provider = () => {
+		const request = requests.at(-1);
+		if (!request.generationConfig.responseSchema.properties.faithful)
+			return geminiResult(reply, false, "en", [first, second]);
+		assert.deepEqual(JSON.parse(request.contents[0].parts[0].text), {
+			evidence: [
+				{ text: first, sourceLanguage: "cs" },
+				{ text: second, sourceLanguage: "cs" },
+			],
+			reply,
+			targetLanguage: "en",
+		});
+		return geminiResponse({ faithful: true });
+	};
+	assert.equal(
+		(
+			await ask("Can outdoor blinds regulate daylight and be operated electrically?")
+		).messages
+			.at(-1)
+			.text.split("\n\n")[0],
+		reply,
+	);
+	assert.equal(requests.length, before + 2);
+	for (const lines of [
+		[first, "A missing source."],
+		[first, second, first, second],
+		[first, "Q: Mají dálkové ovládání?"],
+	]) {
+		const attempts = requests.length;
+		provider = () => geminiResult(reply, false, "en", lines);
+		const denied = await ask(
+			"Can outdoor blinds regulate daylight and be operated electrically?",
+		);
+		assert.match(denied.messages.at(-1).text, /^I don’t have a verified answer/);
+		assert.equal(requests.length, attempts + 2);
+		assert.ok(
+			requests
+				.slice(attempts)
+				.every((request) => !request.generationConfig.responseSchema.properties.faithful),
+		);
+	}
+	const sameLanguage = requests.length;
+	provider = () => geminiResult(first, false, "cs", [first]);
+	assert.equal(
+		(await ask("Jak venkovní žaluzie regulují světlo?", "cs")).messages
+			.at(-1)
+			.text.split("\n\n")[0],
+		first,
+	);
+	assert.equal(requests.length, sameLanguage + 1);
+	provider = () =>
+		requests.at(-1).generationConfig.responseSchema.properties.faithful
+			? geminiResponse({ faithful: false })
+			: geminiResult("Venkovní žaluzie pomáhají s řízením denního světla.", false, "cs", [
+					first,
+				]);
+	assert.equal(
+		(await ask("Jak venkovní žaluzie regulují světlo?", "cs")).messages
+			.at(-1)
+			.text.split("\n\n")[0],
+		first,
+	);
+	assert.equal(requests.length, sameLanguage + 3);
+});
+
 test("standalone greetings and language requests introduce the assistant in each language without calling Gemini", async () => {
 	const cases = [
 		[
