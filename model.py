@@ -44,7 +44,8 @@ def build_body(knowledge, history, text, model):
             contents[-1]["parts"][0]["text"] += "\n" + message
         else:
             contents.append({"role": role, "parts": [{"text": message}]})
-    facts = json.dumps({"about": knowledge["about"], "faq": knowledge["faq"]}, ensure_ascii=False)
+    facts = json.dumps({"sections": knowledge["sections"]} if "sections" in knowledge else
+                       {"about": knowledge["about"], "faq": knowledge["faq"]}, ensure_ascii=False)
     config = {"temperature": 0.3, "maxOutputTokens": 4096}
     if model == "gemini-3.8-flash":
         config["thinkingConfig"] = {"thinkingLevel": "LOW"}
@@ -72,8 +73,12 @@ class Gemini:
     def enabled(self):
         return bool(self.key)
 
-    def reply(self, knowledge, history, text):
+    def reply(self, knowledge, history, text, classify=False):
         payload = build_body(knowledge, history, text, self.model)
+        if classify:
+            payload["systemInstruction"]["parts"].insert(1, {"text":
+                "For an unsupported or unrelated question prefix the reply exactly [[UNKNOWN]]. "
+                "Do not use that marker for greetings, clarification or supported replies."})
         query = request.Request(self.url, data=json.dumps(payload, ensure_ascii=False).encode(),
                                 headers={"Content-Type": "application/json", "x-goog-api-key": self.key}, method="POST")
         try:

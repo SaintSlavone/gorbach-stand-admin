@@ -10,6 +10,7 @@ from urllib.request import Request, urlopen
 from uuid import uuid4
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
+from crm import CRM
 from knowledge import KnowledgeStore
 from model import Gemini
 from server import StandServer
@@ -34,7 +35,7 @@ class StandTest(unittest.TestCase):
         self.addCleanup(self.clean_directory)
 
     def clean_directory(self):
-        for filename in ("kb.json", "old.sqlite"):
+        for filename in ("kb.json", "old.sqlite", "admin.sqlite"):
             (self.directory / filename).unlink(missing_ok=True)
         self.directory.rmdir()
 
@@ -93,6 +94,87 @@ class StandTest(unittest.TestCase):
                 self.assertNotIn("private@example.com", json.dumps(payload))
                 self.assertEqual(call("/api/cbot/msg", {"text": "Test", "history": [{"role": [], "text": "x"}]})[0], 400)
                 self.assertEqual(call("/api/msg", {"text": "Test"})[0], 404)
+
+    def test_crm_bootstrap_preserves_staff_revision_on_restart(self):
+        store = KnowledgeStore(self.directory / "kb.json")
+        store.path.write_text(json.dumps({"about": "Imported content", "faq": []}), encoding="utf-8")
+        crm = CRM(self.directory, store)
+        initial = crm.current_knowledge()
+        self.assertEqual(initial["about"], "Imported content")
+        edited = crm.save_knowledge({"about": "Staff content", "faq": [], "version": initial["version"]}, "admin")
+        restarted = CRM(self.directory, store)
+        self.assertEqual(restarted.current_knowledge()["version"], edited["version"])
+        self.assertEqual(restarted.current_knowledge()["about"], "Staff content")
+        self.assertEqual(json.loads(store.path.read_text(encoding="utf-8"))["about"], "Imported content")
+
+    def test_crm_stateful_handoff_and_section_revisions(self):
+        calls = []
+
+        class Bot:
+            enabled = True
+
+            def reply(self, knowledge, history, text, classify=False):
+                calls.append((knowledge, history, text, classify))
+                return "[[UNKNOWN]] I can help with shading."
+
+        store = KnowledgeStore(self.directory / "kb.json")
+        crm = CRM(self.directory, store)
+        crm.add_staff("sales", "mock-secret")
+        auth = "Basic " + base64.b64encode(b"sales:mock-secret").decode()
+        with serving(StandServer(("127.0.0.1", 0), store, Bot(), crm=crm)) as base:
+            def call(path, body=None, staff=False):
+                headers = {"Content-Type": "application/json"}
+                if staff:
+                    headers["Authorization"] = auth
+                url = Request(base + path, json.dumps(body).encode() if body is not None else None, headers)
+                try:
+                    response = urlopen(url)
+                except HTTPError as exc:
+                    response = exc
+                with response:
+                    raw = response.read()
+                    return response.status, json.loads(raw) if raw else None
+
+            self.assertEqual(call("/api/admin/leads")[0], 401)
+            status, first = call("/api/admin/kb", staff=True)
+            self.assertEqual(status, 200)
+            self.assertGreater(len(first["sections"]), 1)
+            initial = call("/api/start", {"page": "http://stand/", "lang": "cs"})[1]
+            self.assertEqual(len(initial["chips"]), 3)
+            self.assertIn("AI", initial["messages"][0]["text"])
+            sid = initial["sid"]
+            section = {"id": "fresh", "title": "Fresh section", "lang": "en", "text": "New fact"}
+            update = {"sections": [section, *first["sections"]], "version": first["version"]}
+            self.assertEqual(call("/api/admin/kb", update, staff=True)[0], 200)
+            self.assertEqual(call("/api/admin/kb", update, staff=True)[0], 409)
+            self.assertEqual(call("/api/admin/kb", staff=True)[1]["sections"][0], section)
+            first_unknown = call("/api/msg", {"sid": sid, "text": "Question about a dog"})[1]
+            self.assertIsNone(first_unknown["review"])
+            friendly = call("/api/msg", {"sid": sid, "text": "Привет"})[1]
+            self.assertEqual(friendly["lang"], "ru")
+            self.assertIn("ИИ", friendly["messages"][-1]["text"])
+            capability = call("/api/msg", {"sid": sid, "text": "Ты понимаешь русский?"})[1]
+            self.assertIn("говорю по-русски", capability["messages"][-1]["text"])
+            self.assertEqual(len(calls), 1)
+            self.assertNotIn(section, calls[0][0]["sections"])
+            latest = call("/api/start", {"page": "http://stand/", "lang": "en"})[1]["sid"]
+            call("/api/msg", {"sid": latest, "text": "Unrelated question"})
+            self.assertIn(section, calls[-1][0]["sections"])
+            call("/api/msg", {"sid": sid, "text": "Fact about dogs?"})
+            second_unknown = call("/api/msg", {"sid": sid, "text": "Another question about dogs?"})[1]
+            self.assertIn("специалисту", second_unknown["messages"][-1]["text"])
+            call("/api/msg", {"sid": sid, "text": "English?"})
+            call("/api/msg", {"sid": sid, "text": "Jane Doe"})
+            review = call("/api/msg", {"sid": sid, "text": "jane@example.test"})[1]["review"]
+            self.assertEqual((review["purpose"], review["name"]), ("handoff", "Jane Doe"))
+            lead = call("/api/submit", {"sid": sid})[1]["lead_id"]
+            self.assertEqual(call("/api/submit", {"sid": sid})[1]["lead_id"], lead)
+            self.assertEqual(call("/api/history?sid=" + sid)[1]["lead_id"], lead)
+            leads = call("/api/admin/leads", staff=True)[1]["leads"]
+            self.assertEqual(json.loads(leads[0]["fields"])["question"], "Another question about dogs?")
+            self.assertEqual(call("/api/admin/stats", staff=True)[1]["leads"], 1)
+            self.assertEqual(call("/api/admin/leads", {"action": "delete", "id": lead, "confirm": True}, staff=True)[0], 200)
+            self.assertEqual(call("/api/history?sid=" + sid)[0], 404)
 
     def test_import_uses_only_latest_knowledge_and_never_overwrites(self):
         database = self.directory / "old.sqlite"

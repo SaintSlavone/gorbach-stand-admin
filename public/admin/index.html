@@ -15,7 +15,7 @@
     <form id="login" class="login" method="post">
       <h2 data-copy="login">Přihlášení</h2>
       <label for="username" data-copy="user">Uživatel</label>
-      <input id="username" value="admin" autocomplete="username" readonly>
+      <input id="username" value="admin" autocomplete="username" required>
       <label for="password" data-copy="password">Heslo</label>
       <input id="password" type="password" autocomplete="current-password" required>
       <button data-copy="signIn">Přihlásit se</button>
@@ -23,17 +23,27 @@
     <p id="status" role="status"></p>
     <section id="workspace" hidden>
       <aside><button id="logout" type="button" data-copy="signOut">Odhlásit se</button></aside>
+      <nav id="tabs" class="controls"></nav>
+      <section id="crm-panel" hidden></section>
+      <section id="kb-panel">
       <h2 data-copy="knowledge">Báze znalostí</h2>
       <form id="editor" method="post">
+        <div id="section-editor" hidden>
+          <div id="sections"></div>
+          <button type="button" id="add-section" data-copy="addSection">Přidat sekci</button>
+        </div>
+        <div id="faq-editor">
         <label for="about" data-copy="about">O společnosti a produktech</label>
         <textarea id="about" rows="14"></textarea>
         <h3 data-copy="faq">Časté otázky</h3>
         <div id="pairs"></div>
+        <button type="button" id="add" data-copy="add">Přidat otázku</button>
+        </div>
         <div class="controls">
-          <button type="button" id="add" data-copy="add">Přidat otázku</button>
           <button id="save" data-copy="save">Uložit změny</button>
         </div>
       </form>
+      </section>
     </section>
   </main>
 </body>

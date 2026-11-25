@@ -8,6 +8,7 @@
 	api.pathname = api.pathname.replace(/\/+$/, "") + "/";
 	api.search = "";
 	api.hash = "";
+	const stateful = api.pathname.split("/").filter(Boolean).at(-1) !== "cbot";
 	const styles = `
 		:host { all: initial; }
 		.chat-widget {
@@ -58,6 +59,11 @@
 			padding: 12px 16px;
 		}
 		.conversation .visitor { margin-left: auto; color: var(--white); background: var(--ink); }
+		.survey { border: 0; padding: 0; margin: 0; min-width: 0; overflow-wrap: anywhere; }
+		.survey button { margin: 4px; padding: 8px 12px; border-radius: 8px; }
+		.survey button[aria-pressed="true"] { color: var(--ink); background: var(--white); outline: 2px solid var(--ink); }
+		.survey dt, .survey legend { font-weight: bold; }
+		.survey dl, .survey dd { margin: 0 0 8px; }
 		.waiting {
 			width: 16px;
 			height: 16px;
@@ -129,23 +135,50 @@
 		},
 	};
 
+	const surveyLabels = {
+		cs: { confirm: "Potvrdit výběr", step: "Krok", contact: "Telefon nebo e-mail", submit: "Odeslat poptávku", receipt: "Číslo poptávky", invalidContact: "Zadejte platný telefon nebo e-mail." },
+		de: { confirm: "Auswahl bestätigen", step: "Schritt", contact: "Telefon oder E-Mail", submit: "Anfrage senden", receipt: "Anfragenummer", invalidContact: "Geben Sie eine gültige Telefonnummer oder E-Mail-Adresse ein." },
+		en: { confirm: "Confirm choices", step: "Step", contact: "Phone or email", submit: "Submit enquiry", receipt: "Enquiry number", invalidContact: "Enter a valid phone number or email address." },
+		ru: { confirm: "Подтвердить выбор", step: "Шаг", contact: "Телефон или эл. почта", submit: "Отправить заявку", receipt: "Номер заявки", invalidContact: "Введите действительный номер телефона или адрес электронной почты." },
+		uk: { confirm: "Підтвердити вибір", step: "Крок", contact: "Телефон або ел. пошта", submit: "Надіслати заявку", receipt: "Номер заявки", invalidContact: "Введіть дійсний номер телефону або адресу електронної пошти." },
+	};
+
+	const handoffLabels = {
+		cs: "Předat specialistovi",
+		de: "An das Fachteam weiterleiten",
+		en: "Send to a specialist",
+		ru: "Передать специалисту",
+		uk: "Передати фахівцю",
+	};
+
+	const attachmentLabels = {
+		cs: ["Přiložit soubor", "Nahrávání…", "Potvrdit přílohy", "Nahraďte přílohu, jejíž platnost vypršela.", "Nepodporovaný typ souboru.", "Soubor je příliš velký.", "Příliš mnoho příloh.", "Překročen celkový limit velikosti.", "Vyberte platnou přílohu.", "Přílohy"],
+		en: ["Attach file", "Uploading…", "Confirm attachments", "Replace the expired attachment.", "Unsupported file type.", "The file is too large.", "Too many attachments.", "The total upload size limit was reached.", "Select a valid attachment.", "Attachments"],
+		de: ["Datei anhängen", "Wird hochgeladen…", "Anhänge bestätigen", "Ersetzen Sie den abgelaufenen Anhang.", "Nicht unterstützter Dateityp.", "Die Datei ist zu groß.", "Zu viele Anhänge.", "Die Gesamtgröße wurde überschritten.", "Wählen Sie einen gültigen Anhang.", "Anhänge"],
+		ru: ["Прикрепить файл", "Загрузка…", "Подтвердить вложения", "Замените просроченное вложение.", "Тип файла не поддерживается.", "Файл слишком большой.", "Слишком много вложений.", "Превышен общий размер вложений.", "Выберите действительное вложение.", "Вложения"],
+		uk: ["Прикріпити файл", "Завантаження…", "Підтвердити вкладення", "Замініть прострочене вкладення.", "Тип файлу не підтримується.", "Файл завеликий.", "Забагато вкладень.", "Перевищено загальний розмір вкладень.", "Виберіть дійсне вкладення.", "Вкладення"],
+	};
+
 	const hostLanguage = document.documentElement.lang.toLowerCase().split("-")[0];
 	const language = Object.hasOwn(translations, hostLanguage) ? hostLanguage : "cs";
-	const copy = translations[language];
-	const greeting = script.dataset.greet || copy.greeting;
-	const networkError = script.dataset.neterr || copy.error;
+	const greeting = script.dataset.greet || translations[language].greeting;
+	const networkError = script.dataset.neterr || translations[language].error;
 	const historyLimit = 12;
 
-	async function request(path, body) {
+	async function request(path, body, query) {
 		const controller = new AbortController();
-		const timer = setTimeout(() => controller.abort(), 26000);
+		const multipart = body instanceof FormData;
+		// Large uploads can outlast the conversational reply deadline.
+		const timer = multipart ? undefined : setTimeout(() => controller.abort(), 26000);
+		const url = new URL(path, api);
+		if (query) url.search = new URLSearchParams(query);
 		let response;
 		let data;
 		try {
-			response = await fetch(new URL(path, api), {
+			response = await fetch(url, {
 				method: body ? "POST" : "GET",
-				headers: body ? { "Content-Type": "application/json" } : { Accept: "application/json" },
-				body: body ? JSON.stringify(body) : undefined,
+				headers: body && !multipart ? { "Content-Type": "application/json" } : { Accept: "application/json" },
+				body: body && !multipart ? JSON.stringify(body) : body,
 				credentials: "omit",
 				signal: controller.signal,
 			});
@@ -155,8 +188,8 @@
 		} finally {
 			clearTimeout(timer);
 		}
-		if (!response.ok || data?.ok !== true) {
-			throw new Error(typeof data?.message === "string" ? data.message : networkError);
+		if (!response.ok || (!stateful && data?.ok !== true)) {
+			throw new Error(stateful ? data?.error : data?.message);
 		}
 		return data;
 	}
@@ -176,7 +209,7 @@
 		</button><section id="chat" role="dialog" aria-labelledby="title" hidden>
 			<header><strong id="title">Gorbach žaluzie</strong><button class="close" type="button">×</button></header>
 			<button class="reset" type="button"></button>
-			<div class="conversation" role="log" aria-live="polite"></div>
+			<div class="conversation"><div class="messages" role="log" aria-live="polite"></div><fieldset class="survey" hidden></fieldset></div>
 			<div class="error" role="alert"></div>
 			<form autocomplete="off"><input required type="text" enterkeyhint="send"><button type="submit"></button></form>
 			<p class="note"></p>
@@ -187,7 +220,9 @@
 		const launcher = widget.querySelector(".launcher");
 		const closer = widget.querySelector(".close");
 		const panel = widget.querySelector("section");
-		const log = widget.querySelector(".conversation");
+		const conversation = widget.querySelector(".conversation");
+		const log = widget.querySelector(".messages");
+		const survey = widget.querySelector(".survey");
 		const form = widget.querySelector("form");
 		const input = widget.querySelector("input");
 		const send = form.querySelector("button");
@@ -196,19 +231,40 @@
 		const mobile = window.matchMedia("(max-width: 699px)");
 		const viewport = window.visualViewport;
 
-		launcher.setAttribute("aria-label", copy.open);
-		closer.setAttribute("aria-label", copy.close);
-		input.placeholder = copy.input;
-		input.setAttribute("aria-label", copy.input);
-		send.textContent = copy.send;
-		reset.textContent = copy.reset;
-		widget.querySelector(".note").textContent = copy.note;
+		let lang = language;
+		let copy = translations[lang];
+		localize(language);
 
 		let history = [];
 		let busy = false;
+		let ready = !stateful;
+		let sid = "";
+		let attachmentField;
+		let uploaded = [];
+		const fileNames = Object.create(null);
+		const storageKey = "gorbach-sid";
+		if (stateful) {
+			try {
+				sid = localStorage.getItem(storageKey) || "";
+				Object.assign(fileNames, JSON.parse(localStorage.getItem(`${storageKey}-files-${sid}`) || "{}"));
+			} catch {}
+		}
+
+		function localize(locale, inputType) {
+			lang = Object.hasOwn(translations, locale) ? locale : language;
+			copy = translations[lang];
+			widget.lang = lang;
+			launcher.setAttribute("aria-label", copy.open);
+			closer.setAttribute("aria-label", copy.close);
+			input.placeholder = inputType === "phone" ? surveyLabels[lang].contact : copy.input;
+			input.setAttribute("aria-label", input.placeholder);
+			send.textContent = copy.send;
+			reset.textContent = copy.reset;
+			widget.querySelector(".note").textContent = copy.note;
+		}
 
 		function scrollToLatest() {
-			log.scrollTop = log.scrollHeight;
+			conversation.scrollTop = conversation.scrollHeight;
 		}
 
 		function addMessage(text, className = "") {
@@ -218,6 +274,220 @@
 			log.append(line);
 			scrollToLatest();
 			return line;
+		}
+
+		function actionButton(label, action) {
+			const button = document.createElement("button");
+			button.type = "button";
+			button.textContent = label;
+			button.onclick = action;
+			return button;
+		}
+
+		function saveSession(id) {
+			sid = id;
+			uploaded = [];
+			for (const key of Object.keys(fileNames)) delete fileNames[key];
+			try { localStorage.setItem(storageKey, id); } catch {}
+		}
+
+		async function answer(payload) {
+			renderScreen(await request("msg", { sid, ...payload }));
+		}
+
+		function renderReceipt(leadId) {
+			const receipt = document.createElement("p");
+			receipt.setAttribute("role", "status");
+			receipt.textContent = `${surveyLabels[lang].receipt}: ${leadId}`;
+			survey.replaceChildren(receipt);
+			form.hidden = true;
+			scrollToLatest();
+		}
+
+		function renderAttachments(screen) {
+			const [attach, uploading, confirmFiles, recovery, , , , , , attachments] = attachmentLabels[lang];
+			const confirmed = new Set((screen.attachmentAnswers ?? []).flatMap((item) => Object.values(item.fields).flat()));
+			if (confirmed.size) {
+				const line = document.createElement("p");
+				line.textContent = `${attachments} · ${[...confirmed].map((id) => fileNames[id] ?? id).join(", ")}`;
+				survey.append(line);
+			}
+			if (!attachmentField) return;
+
+			const status = document.createElement("p");
+			status.setAttribute("role", "status");
+			const idleStatus = screen.attachmentRecovery ? recovery : "";
+			status.textContent = idleStatus;
+			const picker = document.createElement("input");
+			picker.type = "file";
+			picker.accept = ".jpg,.jpeg,.png,.webp,.heic,.heif,.pdf,.mp4,.mov";
+			picker.setAttribute("aria-label", attach);
+			const files = document.createElement("p");
+			const confirm = actionButton(confirmFiles, () => run(() => answer({ files: uploaded.map((file) => file.id) })));
+			const update = () => {
+				files.textContent = uploaded.map((file) => file.name).join(", ");
+				confirm.disabled = !uploaded.length;
+			};
+			update();
+			picker.onchange = () => {
+				const file = picker.files?.[0];
+				if (!file) return;
+				picker.value = "";
+				return run(async () => {
+					status.textContent = uploading;
+					try {
+						const data = new FormData();
+						data.set("sid", sid);
+						data.set("file", file);
+						const result = await request("file", data);
+						uploaded.push(result.file);
+						fileNames[result.file.id] = result.file.name;
+						try {
+							localStorage.setItem(`${storageKey}-files-${sid}`, JSON.stringify(fileNames));
+						} catch {}
+						update();
+					} finally {
+						status.textContent = idleStatus;
+					}
+				});
+			};
+			survey.append(picker, status, files);
+			if (attachmentField.type === "file") survey.append(confirm);
+		}
+
+		function renderReview(review) {
+			for (const item of review.products) {
+				const title = document.createElement("strong");
+				title.textContent = item.title ?? item.product;
+				const answers = document.createElement("dl");
+				for (const [field, value] of Object.entries(item.answers)) {
+					const term = document.createElement("dt");
+					const detail = document.createElement("dd");
+					term.textContent = item.questionLabels?.[field] ?? field;
+					const answer = item.answerLabels?.[field] ?? value;
+					detail.textContent = Array.isArray(answer) ? answer.join(", ") : answer;
+					answers.append(term, detail);
+				}
+				survey.append(title, answers);
+				if (item.notes) {
+					const notes = document.createElement("p");
+					notes.textContent = item.notes;
+					survey.append(notes);
+				}
+			}
+			const contact = document.createElement("p");
+			contact.textContent = [review.name, review.phone, review.email].filter(Boolean).join(" · ");
+			survey.append(contact);
+		}
+
+		function renderChips(screen) {
+			const selected = new Set();
+			const confirm = actionButton(surveyLabels[lang].confirm, () => run(() => answer({ chips: [...selected] })));
+			confirm.disabled = true;
+			for (const chip of screen.chips ?? []) {
+				const multiple = screen.multi && chip.id !== "skip";
+				const choice = actionButton(chip.label, () => {
+					if (!multiple) return run(() => answer({ chip: chip.id }));
+					if (selected.has(chip.id)) selected.delete(chip.id);
+					else selected.add(chip.id);
+					choice.setAttribute("aria-pressed", String(selected.has(chip.id)));
+					confirm.disabled = !selected.size;
+				});
+				if (multiple) choice.setAttribute("aria-pressed", "false");
+				survey.append(choice);
+			}
+			if (screen.multi) survey.append(confirm);
+		}
+
+		async function submitLead() {
+			try {
+				const result = await request("submit", { sid });
+				if (!result.lead_id) throw new Error();
+				renderReceipt(result.lead_id);
+			} catch (cause) {
+				if (cause.message !== "incomplete") throw cause;
+				const restored = await request("history", null, { sid });
+				renderScreen(restored, true);
+				if (!restored.attachmentRecovery && !restored.lead_id) throw cause;
+			}
+		}
+
+		function renderScreen(screen, replace = false) {
+			localize(screen.lang, screen.input);
+			if (replace) log.replaceChildren();
+			const messages = screen.messages ?? [];
+			for (const { role, text } of messages) addMessage(text, role === "visitor" ? "visitor" : "");
+			const last = messages.at(-1);
+			if (screen.question && (last?.role !== "bot" || last.text !== screen.question)) addMessage(screen.question);
+			survey.hidden = false;
+			attachmentField = screen.lead_id ? null : screen.attachmentField;
+			uploaded = attachmentField ? screen.pendingAttachments ?? [] : [];
+			for (const file of uploaded) fileNames[file.id] = file.name;
+			if (screen.lead_id) {
+				renderReceipt(screen.lead_id);
+				return;
+			}
+			survey.replaceChildren();
+			form.hidden = Boolean(screen.review || attachmentField?.type === "file");
+			renderAttachments(screen);
+			if (screen.progress) {
+				const progress = document.createElement("legend");
+				progress.textContent = `${surveyLabels[lang].step} ${screen.progress.step} / ${screen.progress.total}`;
+				survey.append(progress);
+			}
+			if (screen.review) renderReview(screen.review);
+			renderChips(screen);
+			if (screen.review) {
+				const label = screen.review.purpose === "handoff" ? handoffLabels[lang] : surveyLabels[lang].submit;
+				survey.append(actionButton(label, () => run(submitLead)));
+			}
+			scrollToLatest();
+		}
+
+		async function restore() {
+			if (sid) {
+				try {
+					renderScreen(await request("history", null, { sid }), true);
+					ready = true;
+					return;
+				} catch (cause) {
+					if (cause.message !== "unknown_session") throw cause;
+				}
+			}
+			const start = await request("start", { lang: language, page: location.href });
+			saveSession(start.sid);
+			renderScreen(start, true);
+			ready = true;
+		}
+
+		function localizedError(cause) {
+			if (!stateful) return cause.message || networkError;
+			if (cause.message === "invalid_contact") return surveyLabels[lang].invalidContact;
+			const [, , , , type, size, count, total, invalid_attachment] = attachmentLabels[lang];
+			const uploadErrors = { type, size, count, total, invalid_attachment };
+			return Object.hasOwn(uploadErrors, cause.message) ? uploadErrors[cause.message] : script.dataset.neterr || copy.error;
+		}
+
+		async function run(action) {
+			if (busy) return;
+			busy = true;
+			input.readOnly = send.disabled = reset.disabled = survey.disabled = true;
+			error.textContent = "";
+			try {
+				await action();
+			} catch (cause) {
+				error.textContent = localizedError(cause);
+				if (stateful && cause.message === "unknown_session") {
+					ready = false;
+					try { await restore(); } catch {}
+				}
+			} finally {
+				busy = false;
+				input.readOnly = send.disabled = survey.disabled = false;
+				reset.disabled = !ready;
+				scrollToLatest();
+				if (!panel.hidden && !mobile.matches && !form.hidden) input.focus();
+			}
 		}
 
 		function fitViewport() {
@@ -234,6 +504,7 @@
 				fitViewport();
 				scrollToLatest();
 				(mobile.matches ? closer : input).focus();
+				if (!ready) void run(restore);
 			} else {
 				launcher.focus();
 			}
@@ -257,11 +528,22 @@
 		viewport?.addEventListener("resize", fitViewport);
 		viewport?.addEventListener("scroll", fitViewport);
 		window.addEventListener("resize", fitViewport);
-		reset.onclick = () => {
-			if (busy) return;
-			clearConversation();
-			if (!mobile.matches) input.focus();
-		};
+		reset.onclick = () => run(async () => {
+			if (stateful) {
+				const result = await request("reset", { sid });
+				saveSession(result.sid);
+				ready = false;
+				attachmentField = null;
+				survey.replaceChildren();
+				survey.hidden = true;
+				form.hidden = false;
+				localize(language);
+				clearConversation();
+				await restore();
+			} else {
+				clearConversation();
+			}
+		});
 
 		form.onsubmit = async (event) => {
 			event.preventDefault();
@@ -272,40 +554,66 @@
 				return;
 			}
 
-			busy = true;
-			input.readOnly = send.disabled = reset.disabled = true;
-			input.value = "";
-			error.textContent = "";
-			const visitor = addMessage(text, "visitor");
-			const waiting = document.createElement("div");
-			waiting.className = "waiting";
-			waiting.setAttribute("role", "status");
-			waiting.setAttribute("aria-label", copy.waiting);
-			log.append(waiting);
-			scrollToLatest();
-
-			try {
-				const answer = await request("msg", { text, history });
-				if (typeof answer.reply !== "string" || !answer.reply.trim()) throw new Error(networkError);
-				history.push({ role: "user", text }, { role: "assistant", text: answer.reply });
-				history = history.slice(-historyLimit);
-				addMessage(answer.reply);
-			} catch (cause) {
-				visitor.remove();
-				input.value = text;
-				error.textContent = cause.message || networkError;
-			} finally {
-				waiting.remove();
-				busy = false;
-				input.readOnly = send.disabled = reset.disabled = false;
+			return run(async () => {
+				if (!ready) await restore();
+				if (form.hidden) return;
+				const needsFiles = attachmentField?.type === "text+file";
+				if (needsFiles && !uploaded.length) throw new Error("invalid_attachment");
+				const draft = input.value;
+				input.value = "";
+				const visitor = addMessage(text, "visitor");
+				const waiting = document.createElement("div");
+				waiting.className = "waiting";
+				waiting.setAttribute("role", "status");
+				waiting.setAttribute("aria-label", copy.waiting);
+				log.append(waiting);
 				scrollToLatest();
-				if (!panel.hidden && !mobile.matches) input.focus();
-			}
+				try {
+					if (stateful) {
+						await answer(needsFiles ? { text, files: uploaded.map((file) => file.id) } : { text });
+					} else {
+						const { reply } = await request("msg", { text, history });
+						if (typeof reply !== "string" || !reply.trim()) throw new Error(networkError);
+						history.push({ role: "user", text }, { role: "assistant", text: reply });
+						history = history.slice(-historyLimit);
+						addMessage(reply);
+					}
+				} catch (cause) {
+					if (!stateful) visitor.remove();
+					input.value = draft;
+					throw cause;
+				} finally {
+					if (stateful) visitor.remove();
+					waiting.remove();
+				}
+			});
 		};
 
 		clearConversation();
-		request("status").then((status) => {
-			widget.hidden = status.enabled !== true;
+		request("status", null, stateful ? { lang: language } : undefined).then((status) => {
+			if (!stateful) {
+				widget.hidden = status.enabled !== true;
+				return;
+			}
+			if (typeof status.public !== "boolean") return;
+			if (typeof status.start?.greeting === "string" && !script.dataset.greet) {
+				log.replaceChildren();
+				addMessage(status.start.greeting);
+			}
+			let preview = false;
+			try { preview = localStorage.getItem("gorbach-preview") === "1"; } catch {}
+			function updateVisibility() {
+				if (location.hash === "#gzbot" || location.hash === "#gzbot-off") {
+					preview = location.hash === "#gzbot";
+					try {
+						if (preview) localStorage.setItem("gorbach-preview", "1");
+						else localStorage.removeItem("gorbach-preview");
+					} catch {}
+				}
+				widget.hidden = status.enabled !== true || (!status.public && !preview);
+			}
+			updateVisibility();
+			window.addEventListener("hashchange", updateVisibility);
 		}).catch(() => {});
 	}
 

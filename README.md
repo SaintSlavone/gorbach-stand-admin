@@ -9,33 +9,31 @@ $env:ADMIN_PASSWORD = "<strong password>"
 python server.py --host 127.0.0.1 --port 8790
 ```
 
-Open http://127.0.0.1:8790/ for the stand and http://127.0.0.1:8790/admin/ for the knowledge editor. The admin user is `admin`. The form holds its credential in memory until logout or reload. Put the app behind HTTPS for remote access. The API key stays server-side. The widget is disabled without a Gemini key. Setting `GORBACH_CHAT_ENABLED=false` disables the widget while keeping the knowledge editor available. Admin operations are disabled when `ADMIN_PASSWORD` is unset.
+Open http://127.0.0.1:8790/ for the stand and http://127.0.0.1:8790/admin/ for leads, dialogs, statistics, survey revisions and the knowledge editor. The default staff user is `admin` when `ADMIN_PASSWORD` is set. Existing SQLite staff credentials work, and new staff can be provisioned with `python server.py --add-staff LOGIN` and `GORBACH_STAFF_PASSWORD` set. The browser holds credentials in memory until logout or reload. Use HTTPS for remote access. No external email transport is configured. Submitted leads are visible in CRM.
 
-The server reads the shipped Gorbach knowledge until you save in the editor. Changes go to the ignored `.gorbach/knowledge.json` or the path in `GORBACH_KB_FILE`. The editor supports company knowledge and question/answer pairs. `/api/admin/kb` uses HTTP Basic authentication and accepts JSON.
+## Data and migration
 
-## Existing knowledge
+Runtime data lives in `.gorbach/admin.sqlite` or under `GORBACH_DATA_DIR`. For CRM migration, point the rewrite at an offline copy of the old data directory, including the SQLite backup and any private `attachments` directory. Startup creates missing schema elements and retains existing revisions, staff, dialogs, leads and file records. Legacy sessions are restored using the questionnaire state they pinned. Old browser admin cookies are replaced by staff sign-in.
 
-To transfer an existing knowledge revision, first obtain a consistent offline SQLite backup using the old deployment's SQLite backup procedure. Then run this once on the backup, before saving any edits in the new editor.
+If the configured `GORBACH_KB_FILE` or default `.gorbach/knowledge.json` exists, its about/FAQ content is imported once. Otherwise the service retains existing SQLite knowledge or imports the shipped ordered sections. Staff changes create SQLite revisions. The section editor supports per-section language, title, text, order and additions or removals. Existing visitors keep their pinned knowledge and questionnaire revisions.
 
-```powershell
-$env:GORBACH_KB_FILE = "F:/path/to/runtime/knowledge.json"
-python server.py --import-sqlite "F:/path/to/offline/admin.sqlite"
-```
+To import only old knowledge into a new JSON file, run `python server.py --import-sqlite PATH_TO_BACKUP` with `GORBACH_KB_FILE` pointing to a new file before the first start. This workflow does not copy CRM records or modify the source backup.
 
-This reads the latest knowledge revision and creates the JSON target only if the target is absent. The import leaves the source backup intact. The new application stores knowledge in JSON and keeps conversation history in the page. The old questionnaire, attachment and lead workflows are outside this reference-based runtime.
+New attachments are stored in SQLite. Downloads require staff authentication. Files expire after 180 days. A delegated operator should remove old unreferenced legacy disk files after migration or expiry. Deleting a lead removes its dialog, attachment records and any legacy disk files referenced by that dialog.
 
 ## Widget API
 
-Set `GORBACH_CLIENT_ORIGIN` to the exact origin of the embedding site if it is served separately. Use the server's HTTPS URL in the embedding script when the site runs on another origin.
+The stand uses the stateful widget for guided quote, service and specialist requests. The embed takes the API root in `data-api`.
 
 ```html
-<script src="/widget/gorbach.js" data-api="/api/cbot/" defer></script>
+<script src="/widget/gorbach.js" data-api="/api" defer></script>
 ```
 
-- `GET /api/cbot/status` returns `{ok, enabled}`.
-- `POST /api/cbot/msg` accepts `{text, history}` with `user` and `assistant` turns, and returns `{ok, reply}`.
+The stateful API has GET `status` / `history` and POST `start` / `msg` / `reset` / `file` / `submit` under `/api`. Gemini handles free consultation using the pinned knowledge and recent dialog. Guided forms stay available without a Gemini key. `GORBACH_CHAT_ENABLED=false` disables both visitor APIs. Set `GORBACH_CLIENT_ORIGIN` to the exact embedding origin for a cross-origin installation.
 
-The server limits messages to 800 characters, forwards up to 12 conversation turns and allows four concurrent provider requests. It uses per-address request limits and an in-memory UTC daily cap set by `GORBACH_DAY_LIMIT_MSGS` (1500 by default). Deploy behind a reverse proxy where public exposure requires additional traffic controls.
+The existing standalone reference embed uses `data-api="/api/cbot/"`. GET `/api/cbot/status` returns `{ok, enabled}` and POST `/api/cbot/msg` accepts `{text, history}` and returns `{ok, reply}`. These requests use the latest staff knowledge and do not create CRM lead records. The stateless embed needs a configured Gemini key and model.
+
+Both APIs bound input, provider concurrency and request frequency. The daily Gemini cap is configured by `GORBACH_DAY_LIMIT_MSGS` (default 1500).
 
 ## Verify locally
 
