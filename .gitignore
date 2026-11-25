@@ -3,3 +3,5 @@ node_modules/
 *.tsbuildinfo
 .env*
 /.gorbach/
+__pycache__/
+/next-env.d.ts

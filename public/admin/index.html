@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="cs">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex">
+  <title>Administrace | Gorbach</title>
+  <link rel="stylesheet" href="/site.css">
+  <script src="/admin/admin.js" defer></script>
+</head>
+<body>
+  <main class="admin-page">
+    <header><h1 data-copy="admin">Administrace</h1><a href="/" data-copy="stand">Testovací stránka</a></header>
+    <aside><label for="locale" data-copy="language">Jazyk</label><select id="locale"><option value="cs">Čeština</option><option value="ru">Русский</option></select></aside>
+    <form id="login" class="login" method="post">
+      <h2 data-copy="login">Přihlášení</h2>
+      <label for="username" data-copy="user">Uživatel</label>
+      <input id="username" value="admin" autocomplete="username" readonly>
+      <label for="password" data-copy="password">Heslo</label>
+      <input id="password" type="password" autocomplete="current-password" required>
+      <button data-copy="signIn">Přihlásit se</button>
+    </form>
+    <p id="status" role="status"></p>
+    <section id="workspace" hidden>
+      <aside><button id="logout" type="button" data-copy="signOut">Odhlásit se</button></aside>
+      <h2 data-copy="knowledge">Báze znalostí</h2>
+      <form id="editor" method="post">
+        <label for="about" data-copy="about">O společnosti a produktech</label>
+        <textarea id="about" rows="14"></textarea>
+        <h3 data-copy="faq">Časté otázky</h3>
+        <div id="pairs"></div>
+        <div class="controls">
+          <button type="button" id="add" data-copy="add">Přidat otázku</button>
+          <button id="save" data-copy="save">Uložit změny</button>
+        </div>
+      </form>
+    </section>
+  </main>
+</body>
+</html>

@@ -1,17 +1,7 @@
-Agent Instructions
+# Agent instructions
 
-You are a senior developer with years of experience; After 10 completed logical unit (page scaffold, function, style block), stop codding and let me verify everything; You may working with other ai agents. Use PROJECT_ARCHITECTURE.md as a source of how project needs to look.
+This repository provides the Gorbach test stand, chat API and knowledge editor. Read PROJECT_ARCHITECTURE.md before editing.
 
-This repository is test web site with admin crm to show how ai chat works. Ai chat is implemented using script tag
+Keep the Python runtime on the standard library. Verify production entry points and run `python -m unittest discover -s tests -v` before committing. Check staged file scope. Commit each completed logical unit with a short lowercase imperative message.
 
-Git workflow
-
-Commit after each completed logical unit (page scaffold, function, style block)
-
-Message style: short lowercase imperative — "projects page init", "open project function"
-
-Run npm run build before committing; never commit a broken build
-
-Push only when I explicitly say "push"
-
-Run `npm run format` from the project root before completing every task and before the pre-commit build.
+Coordinate regenerated widget assets with gorbach-ai-chat. Keep pre-existing workspace changes and runtime data intact. Push or deploy only when explicitly authorized.
